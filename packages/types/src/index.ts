@@ -82,6 +82,8 @@ export type {
   WSAlert,
   WSSubscribe,
   WSUnsubscribe,
+  WSPriceUpdate,
+  WSLeaderboardUpdate,
   TickWebhook,
   WebhookResponse,
   LeaderboardEntry,

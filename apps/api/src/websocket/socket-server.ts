@@ -15,6 +15,9 @@ import type {
 const CHANNELS = {
   TICK_UPDATES: 'channel:tick_updates',
   MARKET_UPDATES: 'channel:market',
+  PRICE_UPDATES: 'channel:prices',
+  NEWS_UPDATES: 'channel:news',
+  LEADERBOARD_UPDATES: 'channel:leaderboard',
   AGENT_UPDATES: (agentId: string) => `channel:agent:${agentId}`,
   SYMBOL_UPDATES: (symbol: string) => `channel:market:${symbol}`,
 };
@@ -45,9 +48,12 @@ export class SocketServer {
   }
 
   private setupRedisSubscriptions(): void {
-    // Subscribe to global channels
+    // Subscribe to global public channels
     this.subscribeToRedisChannel(CHANNELS.TICK_UPDATES);
     this.subscribeToRedisChannel(CHANNELS.MARKET_UPDATES);
+    this.subscribeToRedisChannel(CHANNELS.PRICE_UPDATES);
+    this.subscribeToRedisChannel(CHANNELS.NEWS_UPDATES);
+    this.subscribeToRedisChannel(CHANNELS.LEADERBOARD_UPDATES);
 
     // Handle Redis messages
     this.redisSubscriber.on('message', (channel: string, message: string) => {
@@ -72,6 +78,15 @@ export class SocketServer {
       } else if (channel === CHANNELS.MARKET_UPDATES) {
         // Broadcast market updates to subscribers
         this.io.to('market').emit('MARKET_UPDATE', parsed);
+      } else if (channel === CHANNELS.PRICE_UPDATES) {
+        // Broadcast price updates to subscribers
+        this.io.to('prices').emit('PRICE_UPDATE', parsed);
+      } else if (channel === CHANNELS.NEWS_UPDATES) {
+        // Broadcast news updates to subscribers
+        this.io.to('news').emit('NEWS', parsed);
+      } else if (channel === CHANNELS.LEADERBOARD_UPDATES) {
+        // Broadcast leaderboard updates to subscribers
+        this.io.to('leaderboard').emit('LEADERBOARD_UPDATE', parsed);
       } else if (channel.startsWith('channel:market:')) {
         // Symbol-specific updates
         const symbol = channel.replace('channel:market:', '');
@@ -156,6 +171,12 @@ export class SocketServer {
     for (const channel of channels) {
       if (channel === 'market') {
         socket.join('market');
+      } else if (channel === 'prices') {
+        socket.join('prices');
+      } else if (channel === 'news') {
+        socket.join('news');
+      } else if (channel === 'leaderboard') {
+        socket.join('leaderboard');
       } else if (channel.startsWith('symbol:')) {
         const symbol = channel.replace('symbol:', '');
         socket.join(`symbol:${symbol}`);
@@ -179,6 +200,12 @@ export class SocketServer {
     for (const channel of channels) {
       if (channel === 'market') {
         socket.leave('market');
+      } else if (channel === 'prices') {
+        socket.leave('prices');
+      } else if (channel === 'news') {
+        socket.leave('news');
+      } else if (channel === 'leaderboard') {
+        socket.leave('leaderboard');
       } else if (channel.startsWith('symbol:')) {
         socket.leave(channel);
       } else if (channel === 'tick_updates') {

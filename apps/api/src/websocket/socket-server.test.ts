@@ -124,6 +124,65 @@ describe('SocketServer', () => {
       expect(result.payload.channels).toContain('symbol:AAPL');
     });
 
+    it('should allow subscribing to prices channel', async () => {
+      const client = await connectClient();
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      client.emit('SUBSCRIBE', { channels: ['prices'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('prices');
+    });
+
+    it('should allow subscribing to news channel', async () => {
+      const client = await connectClient();
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      client.emit('SUBSCRIBE', { channels: ['news'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('news');
+    });
+
+    it('should allow subscribing to leaderboard channel', async () => {
+      const client = await connectClient();
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('leaderboard');
+    });
+
+    it('should allow subscribing to multiple public channels', async () => {
+      const client = await connectClient();
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      client.emit('SUBSCRIBE', { channels: ['tick_updates', 'prices', 'news', 'leaderboard'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('tick_updates');
+      expect(result.payload.channels).toContain('prices');
+      expect(result.payload.channels).toContain('news');
+      expect(result.payload.channels).toContain('leaderboard');
+    });
+
     it('should allow unsubscribing from channels', async () => {
       const client = await connectClient();
 
@@ -143,6 +202,29 @@ describe('SocketServer', () => {
       const result = await unsubPromise;
       expect(result.type).toBe('UNSUBSCRIBED');
       expect(result.payload.channels).toContain('market');
+    });
+
+    it('should allow unsubscribing from public channels', async () => {
+      const client = await connectClient();
+
+      // First subscribe
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['prices', 'news', 'leaderboard'] });
+      });
+
+      // Then unsubscribe
+      const unsubPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('UNSUBSCRIBED', resolve);
+      });
+
+      client.emit('UNSUBSCRIBE', { channels: ['prices', 'news', 'leaderboard'] });
+
+      const result = await unsubPromise;
+      expect(result.type).toBe('UNSUBSCRIBED');
+      expect(result.payload.channels).toContain('prices');
+      expect(result.payload.channels).toContain('news');
+      expect(result.payload.channels).toContain('leaderboard');
     });
   });
 
