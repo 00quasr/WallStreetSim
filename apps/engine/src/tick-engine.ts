@@ -220,6 +220,41 @@ export class TickEngine extends EventEmitter {
     // Publish tick update to Redis
     await redisService.publish(redisService.CHANNELS.TICK_UPDATES, tickUpdate);
 
+    // Publish dedicated price updates channel with simplified format
+    if (priceUpdates.length > 0) {
+      const priceUpdateMessage = {
+        type: 'PRICE_UPDATE' as const,
+        payload: {
+          tick: this.currentTick,
+          prices: priceUpdates.map(u => ({
+            symbol: u.symbol,
+            price: u.newPrice,
+            change: u.change,
+            changePercent: u.changePercent,
+            volume: u.volume,
+          })),
+        },
+        timestamp: new Date().toISOString(),
+      };
+      await redisService.publish(redisService.CHANNELS.PRICE_UPDATES, priceUpdateMessage);
+
+      // Publish per-symbol market updates for subscribers to specific symbols
+      for (const update of priceUpdates) {
+        const symbolUpdateMessage = {
+          type: 'MARKET_UPDATE' as const,
+          payload: {
+            symbol: update.symbol,
+            price: update.newPrice,
+            change: update.change,
+            changePercent: update.changePercent,
+            volume: update.volume,
+          },
+          timestamp: new Date().toISOString(),
+        };
+        await redisService.publish(redisService.CHANNELS.SYMBOL_UPDATES(update.symbol), symbolUpdateMessage);
+      }
+    }
+
     // Emit tick event
     this.emit('tick', tickUpdate);
 

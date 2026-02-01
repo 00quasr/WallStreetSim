@@ -549,6 +549,137 @@ describe('SocketServer', () => {
       expect(typeof socketServer.sendToAgent).toBe('function');
     });
 
+    it('should broadcast PRICE_UPDATE to prices room', async () => {
+      const client = await connectClient();
+
+      // Subscribe to prices channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const priceUpdatePromise = new Promise<{
+        type: string;
+        payload: {
+          tick: number;
+          prices: { symbol: string; price: number; change: number; changePercent: number; volume: number }[];
+        };
+        timestamp: string;
+      }>((resolve) => {
+        client.on('PRICE_UPDATE', resolve);
+      });
+
+      // Broadcast a price update
+      const priceUpdate = {
+        type: 'PRICE_UPDATE',
+        payload: {
+          tick: 42,
+          prices: [
+            { symbol: 'AAPL', price: 150.50, change: 1.50, changePercent: 1.01, volume: 1000000 },
+            { symbol: 'GOOG', price: 2810.00, change: 10.00, changePercent: 0.36, volume: 500000 },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('prices', 'PRICE_UPDATE', priceUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await priceUpdatePromise;
+      expect(received.type).toBe('PRICE_UPDATE');
+      expect(received.payload.tick).toBe(42);
+      expect(received.payload.prices).toHaveLength(2);
+      expect(received.payload.prices[0].symbol).toBe('AAPL');
+      expect(received.payload.prices[0].price).toBe(150.50);
+      expect(received.payload.prices[0].change).toBe(1.50);
+      expect(received.payload.prices[0].changePercent).toBe(1.01);
+      expect(received.payload.prices[1].symbol).toBe('GOOG');
+    });
+
+    it('should broadcast MARKET_UPDATE to symbol-specific room', async () => {
+      const client = await connectClient();
+
+      // Subscribe to AAPL market channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['market:AAPL'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const marketUpdatePromise = new Promise<{
+        type: string;
+        payload: { symbol: string; price: number; change: number; changePercent: number; volume: number };
+        timestamp: string;
+      }>((resolve) => {
+        client.on('MARKET_UPDATE', resolve);
+      });
+
+      // Broadcast a market update for AAPL
+      const marketUpdate = {
+        type: 'MARKET_UPDATE',
+        payload: {
+          symbol: 'AAPL',
+          price: 151.00,
+          change: 2.00,
+          changePercent: 1.34,
+          volume: 1500000,
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('market:AAPL', 'MARKET_UPDATE', marketUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await marketUpdatePromise;
+      expect(received.type).toBe('MARKET_UPDATE');
+      expect(received.payload.symbol).toBe('AAPL');
+      expect(received.payload.price).toBe(151.00);
+      expect(received.payload.change).toBe(2.00);
+      expect(received.payload.changePercent).toBe(1.34);
+      expect(received.payload.volume).toBe(1500000);
+    });
+
+    it('should not receive MARKET_UPDATE for unsubscribed symbols', async () => {
+      const client = await connectClient();
+
+      // Subscribe to AAPL market channel only
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['market:AAPL'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      let googReceived = false;
+      let aaplReceived = false;
+
+      client.on('MARKET_UPDATE', (data: { payload: { symbol: string } }) => {
+        if (data.payload.symbol === 'GOOG') googReceived = true;
+        if (data.payload.symbol === 'AAPL') aaplReceived = true;
+      });
+
+      // Broadcast GOOG update (should not be received)
+      socketServer.broadcast('market:GOOG', 'MARKET_UPDATE', {
+        type: 'MARKET_UPDATE',
+        payload: { symbol: 'GOOG', price: 2820.00, change: 20.00, changePercent: 0.71, volume: 600000 },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Broadcast AAPL update (should be received)
+      socketServer.broadcast('market:AAPL', 'MARKET_UPDATE', {
+        type: 'MARKET_UPDATE',
+        payload: { symbol: 'AAPL', price: 152.00, change: 3.00, changePercent: 2.01, volume: 2000000 },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Wait a bit for messages to be received
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(aaplReceived).toBe(true);
+      expect(googReceived).toBe(false);
+    });
+
     it('should broadcast TICK_UPDATE to tick room via broadcast method', async () => {
       const client = await connectClient();
 
