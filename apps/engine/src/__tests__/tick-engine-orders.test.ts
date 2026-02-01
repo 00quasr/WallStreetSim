@@ -688,6 +688,161 @@ describe('TickEngine Order Processing', () => {
     });
   });
 
+  describe('pending order processing within 1-2 ticks', () => {
+    it('transitions limit orders from pending to open status on the next tick', async () => {
+      // A limit order that doesn't match should transition to 'open' status
+      const limitOrder = {
+        id: 'limit-order-1',
+        agentId: 'agent-1',
+        symbol: 'AAPL',
+        side: 'BUY',
+        orderType: 'LIMIT',
+        quantity: 100,
+        price: '140.00', // Below market, won't match any ask
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([limitOrder]);
+
+      await engine.runTick();
+
+      // Order should be updated to 'open' status (now on the book)
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'limit-order-1',
+        'open',
+        0,
+        null,
+        null
+      );
+    });
+
+    it('does not re-fetch orders that have been processed (status != pending)', async () => {
+      // First tick: submit a limit sell order
+      const sellOrder = {
+        id: 'sell-order-1',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 100,
+        price: '160.00', // Above current price
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
+
+      // First tick processes the order
+      await engine.runTick();
+
+      // Verify order was marked as 'open'
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'sell-order-1',
+        'open',
+        0,
+        null,
+        null
+      );
+
+      // Clear mocks to track second tick calls
+      vi.clearAllMocks();
+
+      // Second tick: no new pending orders
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce([]);
+
+      await engine.runTick();
+
+      // The sell order should NOT be re-processed (it's now 'open', not 'pending')
+      expect(dbService.getPendingOrders).not.toHaveBeenCalled();
+    });
+
+    it('processes pending orders within 1 tick of submission', async () => {
+      // Submit order at tick 0, should be processed at tick 1
+      const order = {
+        id: 'order-1',
+        agentId: 'agent-1',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 50,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([order]);
+
+      const tickUpdate = await engine.runTick();
+
+      // Order was processed on tick 1 (tickSubmitted was 0)
+      expect(tickUpdate.tick).toBe(1);
+      // Order status was updated
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'order-1',
+        'open', // Limit order with no match goes to 'open'
+        0,
+        null,
+        null
+      );
+    });
+
+    it('market orders without liquidity remain pending', async () => {
+      // Clear all asks from the book first
+      const marketOrder = {
+        id: 'market-order-1',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        orderType: 'MARKET',
+        quantity: 100,
+        price: null,
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      // No liquidity on the book
+      engine.getMarketEngine().clearAll();
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([marketOrder]);
+
+      await engine.runTick();
+
+      // Market order with no liquidity stays pending
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'market-order-1',
+        'pending',
+        0,
+        null,
+        null
+      );
+    });
+  });
+
   describe('market closed behavior', () => {
     it('does not process orders when market is closed', async () => {
       // Create engine with market hours that will be closed

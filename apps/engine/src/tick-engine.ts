@@ -313,12 +313,20 @@ export class TickEngine extends EventEmitter {
         }
 
         // Determine new order status
+        // Orders are processed within 1-2 ticks:
+        // - 'pending' -> 'open' (limit order added to book, waiting for match)
+        // - 'pending' -> 'filled' (fully matched)
+        // - 'pending' -> 'partial' (partially filled, remaining on book)
         let newStatus: string;
         if (remainingQuantity === 0) {
           newStatus = 'filled';
         } else if (totalFilledQuantity > 0) {
           newStatus = 'partial';
+        } else if (order.type === 'LIMIT' && remainingQuantity > 0) {
+          // Limit order with no fills - now resting on the order book
+          newStatus = 'open';
         } else {
+          // Market order with no fills (no liquidity available)
           newStatus = 'pending';
         }
 
