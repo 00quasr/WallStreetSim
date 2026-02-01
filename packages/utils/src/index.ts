@@ -146,3 +146,13 @@ export type {
   CircuitBreakerConfig,
   CircuitStats,
 } from './circuit-breaker';
+
+// Sentiment analysis utilities
+export {
+  analyzeSentiment,
+  getSentimentScore,
+  getSentimentScoreString,
+  calculateRumorImpact,
+} from './sentiment';
+
+export type { SentimentResult, RumorImpactConfig, RumorImpactResult } from './sentiment';

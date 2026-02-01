@@ -16,7 +16,8 @@ export type EventType =
   | 'BLACK_SWAN'
   | 'MEME_PUMP'
   | 'MARKET_CRASH'
-  | 'RALLY';
+  | 'RALLY'
+  | 'RUMOR';
 
 export interface MarketEvent {
   id: string;
@@ -79,7 +80,8 @@ export type NewsCategory =
   | 'market'
   | 'product'
   | 'analysis'
-  | 'crime';
+  | 'crime'
+  | 'rumor';
 
 export interface Investigation {
   id: string;

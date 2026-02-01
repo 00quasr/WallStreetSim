@@ -1,5 +1,37 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 
+// Mock the sentiment analysis and rumor impact functions from @wallstreetsim/utils
+vi.mock('@wallstreetsim/utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@wallstreetsim/utils')>();
+  return {
+    ...actual,
+    calculateRumorImpact: vi.fn((text: string) => {
+      // Simple mock: negative words = negative sentiment/impact
+      const lowerText = text.toLowerCase();
+      if (lowerText.includes('recall') || lowerText.includes('bug') || lowerText.includes('fraud') || lowerText.includes('crash') || lowerText.includes('scandal')) {
+        return {
+          impact: -0.02,
+          duration: 10,
+          sentiment: { score: -0.5, scoreString: '-0.5000', label: 'negative', positiveCount: 0, negativeCount: 2, confidence: 0.5 },
+        };
+      }
+      if (lowerText.includes('acquiring') || lowerText.includes('deal') || lowerText.includes('surge') || lowerText.includes('profit')) {
+        return {
+          impact: 0.02,
+          duration: 10,
+          sentiment: { score: 0.5, scoreString: '0.5000', label: 'positive', positiveCount: 2, negativeCount: 0, confidence: 0.5 },
+        };
+      }
+      return {
+        impact: 0,
+        duration: 10,
+        sentiment: { score: 0, scoreString: '0.0000', label: 'neutral', positiveCount: 0, negativeCount: 0, confidence: 0 },
+      };
+    }),
+    generateUUID: vi.fn(() => 'mock-uuid-12345'),
+  };
+});
+
 // Mock the database module
 vi.mock('@wallstreetsim/db', () => ({
   db: {
@@ -1236,7 +1268,7 @@ describe('Action Processor', () => {
           category: 'rumor',
           symbols: 'NVDA',
           agentIds: 'agent-1',
-          sentiment: '0',
+          sentiment: '0.5000', // Positive sentiment due to "acquiring" and "deal"
         })
       );
     });
@@ -2243,6 +2275,229 @@ describe('Action Processor', () => {
 
       // Target reputation should be floored at 0 (3 - 5 would be -2, but floored)
       expect(updateSetMock).toHaveBeenCalledWith({ reputation: 0 });
+    });
+
+    it('returns market events for positive rumors', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'news-123' }]),
+        })),
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'RUMOR', targetSymbol: 'AAPL', content: 'Apple acquiring massive company in secret deal!' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].marketEvents).toHaveLength(1);
+
+      const marketEvent = results[0].marketEvents[0];
+      expect(marketEvent.type).toBe('RUMOR');
+      expect(marketEvent.symbol).toBe('AAPL');
+      expect(marketEvent.impact).toBe(0.02); // Positive impact from mock
+      expect(marketEvent.duration).toBe(10);
+      expect(marketEvent.tick).toBe(100);
+      expect(marketEvent.headline).toBe('RUMOR: Apple acquiring massive company in secret deal!');
+    });
+
+    it('returns market events for negative rumors', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'news-456' }]),
+        })),
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'RUMOR', targetSymbol: 'GOOG', content: 'CEO caught in massive fraud scandal!' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].marketEvents).toHaveLength(1);
+
+      const marketEvent = results[0].marketEvents[0];
+      expect(marketEvent.type).toBe('RUMOR');
+      expect(marketEvent.symbol).toBe('GOOG');
+      expect(marketEvent.impact).toBe(-0.02); // Negative impact from mock
+      expect(marketEvent.duration).toBe(10);
+    });
+
+    it('does not return market event for neutral rumors', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'news-789' }]),
+        })),
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'RUMOR', targetSymbol: 'MSFT', content: 'The company held a meeting yesterday' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].marketEvents).toHaveLength(0); // No market event for neutral rumor
+    });
+
+    it('includes impact and duration in action result data', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'news-abc' }]),
+        })),
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'RUMOR', targetSymbol: 'TSLA', content: 'Tesla stock price surge expected!' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].data?.impact).toBe(0.02);
+      expect(results[0].results[0].data?.duration).toBe(10);
     });
   });
 });

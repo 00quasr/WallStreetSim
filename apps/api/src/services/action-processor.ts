@@ -1,12 +1,16 @@
 import { db, agents, orders, actions, messages, investigations, alliances, news } from '@wallstreetsim/db';
 import { eq, and } from 'drizzle-orm';
 import type { AgentActionInput } from '@wallstreetsim/utils';
+import { calculateRumorImpact, generateUUID } from '@wallstreetsim/utils';
+import type { MarketEvent } from '@wallstreetsim/types';
 
 export interface ActionResult {
   action: string;
   success: boolean;
   message?: string;
   data?: Record<string, unknown>;
+  /** Market event to trigger if the action creates one (e.g., rumors) */
+  marketEvent?: MarketEvent;
 }
 
 export interface ProcessActionContext {
@@ -189,6 +193,10 @@ async function processRumor(
     .set({ reputation: agent.reputation - reputationCost })
     .where(eq(agents.id, agentId));
 
+  // Calculate rumor impact based on sentiment analysis
+  const rumorImpact = calculateRumorImpact(content);
+  const sentiment = rumorImpact.sentiment.scoreString;
+
   await db.insert(news).values({
     tick,
     headline: `RUMOR: ${content.substring(0, 100)}`,
@@ -196,14 +204,37 @@ async function processRumor(
     category: 'rumor',
     symbols: targetSymbol,
     agentIds: agentId,
-    sentiment: '0',
+    sentiment,
   });
+
+  // Create a market event if the rumor has meaningful sentiment impact
+  let marketEvent: MarketEvent | undefined;
+  if (Math.abs(rumorImpact.impact) > 0.001) {
+    marketEvent = {
+      id: generateUUID(),
+      type: 'RUMOR',
+      symbol: targetSymbol,
+      impact: rumorImpact.impact,
+      duration: rumorImpact.duration,
+      tick,
+      headline: `RUMOR: ${content.substring(0, 100)}`,
+      content,
+      createdAt: new Date(),
+    };
+  }
 
   return {
     action: 'RUMOR',
     success: true,
     message: 'Rumor spreading...',
-    data: { symbol: targetSymbol, reputationCost },
+    data: {
+      symbol: targetSymbol,
+      reputationCost,
+      sentiment,
+      impact: rumorImpact.impact,
+      duration: rumorImpact.duration,
+    },
+    marketEvent,
   };
 }
 

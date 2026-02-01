@@ -57,7 +57,40 @@ vi.mock('@wallstreetsim/db', () => ({
   },
 }));
 
+// Mock the sentiment analysis and rumor impact functions from @wallstreetsim/utils
+vi.mock('@wallstreetsim/utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@wallstreetsim/utils')>();
+  return {
+    ...actual,
+    calculateRumorImpact: vi.fn((text: string) => {
+      // Simple mock: positive words = positive impact, negative words = negative impact
+      const lowerText = text.toLowerCase();
+      if (lowerText.includes('surge') || lowerText.includes('profit') || lowerText.includes('growth') || lowerText.includes('massive') || lowerText.includes('deal') || lowerText.includes('acquiring')) {
+        return {
+          impact: 0.02,
+          duration: 10,
+          sentiment: { score: 0.5, scoreString: '0.5000', label: 'positive', positiveCount: 2, negativeCount: 0, confidence: 0.5 },
+        };
+      }
+      if (lowerText.includes('crash') || lowerText.includes('recall') || lowerText.includes('bug') || lowerText.includes('fraud') || lowerText.includes('scandal')) {
+        return {
+          impact: -0.02,
+          duration: 10,
+          sentiment: { score: -0.5, scoreString: '-0.5000', label: 'negative', positiveCount: 0, negativeCount: 2, confidence: 0.5 },
+        };
+      }
+      return {
+        impact: 0,
+        duration: 10,
+        sentiment: { score: 0, scoreString: '0.0000', label: 'neutral', positiveCount: 0, negativeCount: 0, confidence: 0 },
+      };
+    }),
+    generateUUID: vi.fn(() => 'mock-uuid-12345'),
+  };
+});
+
 import { db } from '@wallstreetsim/db';
+import { calculateRumorImpact, generateUUID } from '@wallstreetsim/utils';
 
 const createMockAgent = (overrides = {}) => ({
   id: '550e8400-e29b-41d4-a716-446655440000',
@@ -390,7 +423,7 @@ describe('ActionProcessor', () => {
       expect(updateSetMock).toHaveBeenCalledWith({ reputation: 45 });
     });
 
-    it('should create news entry with rumor content', async () => {
+    it('should create news entry with rumor content and sentiment', async () => {
       const insertValuesMock = vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([{ id: 'news-456' }]),
       });
@@ -421,9 +454,44 @@ describe('ActionProcessor', () => {
           category: 'rumor',
           symbols: 'TSLA',
           agentIds: context.agentId,
-          sentiment: '0',
         })
       );
+
+      // Verify sentiment is calculated (should be negative due to "recalls" and "bug")
+      const sentimentValue = insertValuesMock.mock.calls[0][0].sentiment;
+      expect(sentimentValue).toBeDefined();
+      expect(typeof sentimentValue).toBe('string');
+      expect(parseFloat(sentimentValue)).toBeLessThan(0);
+    });
+
+    it('should calculate positive sentiment for bullish rumors', async () => {
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'news-789' }]),
+      });
+
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      } as unknown as ReturnType<typeof db.update>);
+
+      vi.mocked(db.insert).mockReturnValue({
+        values: insertValuesMock,
+      } as unknown as ReturnType<typeof db.insert>);
+
+      const context = createMockContext({ reputation: 50 });
+      const bullishRumor = 'Company about to announce massive profits and surge in growth!';
+      const result = await processAction(context, {
+        type: 'RUMOR',
+        targetSymbol: 'AAPL',
+        content: bullishRumor,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.sentiment).toBeDefined();
+
+      const sentimentValue = insertValuesMock.mock.calls[0][0].sentiment;
+      expect(parseFloat(sentimentValue)).toBeGreaterThan(0);
     });
 
     it('should truncate long rumor content in headline', async () => {
