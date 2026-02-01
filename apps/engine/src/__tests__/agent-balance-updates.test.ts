@@ -80,6 +80,9 @@ describe('Agent Holdings and Cash Balance Updates', () => {
     });
 
     await engine.initialize();
+
+    // Clear market maker's initial liquidity so tests can control the order book
+    engine.getMarketEngine().clearAll();
   });
 
   describe('Buyer cash and holdings updates', () => {
@@ -568,6 +571,9 @@ describe('Agent Holdings and Cash Balance Updates', () => {
           eventChance: 0,
         });
         await engine.initialize();
+
+        // Clear market maker's initial liquidity so test can control the order book
+        engine.getMarketEngine().clearAll();
 
         const sellOrder = {
           id: 'sell-order-1',

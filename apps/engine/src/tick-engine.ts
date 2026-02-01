@@ -8,6 +8,7 @@ import {
 } from '@wallstreetsim/utils';
 import { PriceEngine } from './price-engine';
 import { MarketEngine } from './market-engine';
+import { MarketMaker } from './market-maker';
 import { EventGenerator } from './event-generator';
 import * as dbService from './services/db';
 import * as redisService from './services/redis';
@@ -32,6 +33,7 @@ export class TickEngine extends EventEmitter {
   private config: TickEngineConfig;
   private priceEngine: PriceEngine;
   private marketEngine: MarketEngine;
+  private marketMaker: MarketMaker;
   private eventGenerator: EventGenerator;
 
   private currentTick: number = 0;
@@ -45,6 +47,7 @@ export class TickEngine extends EventEmitter {
 
     this.priceEngine = new PriceEngine();
     this.marketEngine = new MarketEngine();
+    this.marketMaker = new MarketMaker();
     this.eventGenerator = new EventGenerator({
       baseEventChance: this.config.eventChance,
     });
@@ -74,6 +77,11 @@ export class TickEngine extends EventEmitter {
     // Initialize engines
     this.priceEngine.initialize(companies, sectorData);
     this.marketEngine.initialize(companies.map(c => c.symbol));
+
+    // Seed initial liquidity from market maker
+    const liquidityOrders = this.marketMaker.generateLiquidityForAll(companies, this.currentTick);
+    this.marketEngine.seedLiquidity(liquidityOrders);
+    console.log(`  Seeded initial liquidity: ${liquidityOrders.length} orders`);
 
     // Sync tick to Redis
     await redisService.setCurrentTick(this.currentTick);
