@@ -262,15 +262,38 @@ async function processBribe(
 }
 
 /**
- * Process whistleblow action
+ * Process whistleblow action (report other agents to SEC)
  */
 async function processWhistleblow(agentId: string, action: any, tick: number) {
-  // In production: trigger SEC investigation on target
+  const { targetAgent, evidence } = action;
+
+  // Cannot whistleblow on yourself
+  if (targetAgent === agentId) {
+    return { action: 'WHISTLEBLOW', success: false, message: 'Cannot report yourself' };
+  }
+
+  // Verify target agent exists
+  const [target] = await db
+    .select({ id: agents.id, status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, targetAgent));
+
+  if (!target) {
+    return { action: 'WHISTLEBLOW', success: false, message: 'Target agent not found' };
+  }
+
+  // Cannot report agents that are not active
+  if (target.status !== 'active') {
+    return { action: 'WHISTLEBLOW', success: false, message: `Cannot report agent with status: ${target.status}` };
+  }
+
+  // In production: full investigation logic is in the engine
+  // This API endpoint provides basic validation and acknowledgment
   return {
     action: 'WHISTLEBLOW',
     success: true,
-    message: 'Report filed with SEC',
-    data: { targetAgent: action.targetAgent },
+    message: 'Whistleblower report submitted to SEC',
+    data: { targetAgent, evidenceLength: evidence.length },
   };
 }
 

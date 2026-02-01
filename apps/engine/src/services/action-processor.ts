@@ -519,19 +519,109 @@ async function processBribe(
 }
 
 /**
- * Process whistleblow action
+ * Process whistleblow action (report other agents to SEC)
+ *
+ * Mechanics:
+ * - Cannot whistleblow on yourself
+ * - Target agent must exist and be active
+ * - Creates an SEC investigation against the target
+ * - Whistleblower gains reputation (civic duty reward)
+ * - Target loses reputation (being publicly accused)
+ * - Both parties receive notification messages
+ * - Multiple reports on the same agent strengthen the investigation
  */
 async function processWhistleblow(
   agentId: string,
   action: { type: 'WHISTLEBLOW'; targetAgent: string; evidence: string },
   tick: number
 ): Promise<ActionProcessResult> {
-  // TODO: Implement full whistleblow mechanics (trigger SEC investigation)
+  const { targetAgent, evidence } = action;
+
+  // Cannot whistleblow on yourself
+  if (targetAgent === agentId) {
+    return { action: 'WHISTLEBLOW', success: false, message: 'Cannot report yourself' };
+  }
+
+  // Verify target agent exists
+  const [target] = await db
+    .select({ id: agents.id, name: agents.name, status: agents.status, reputation: agents.reputation })
+    .from(agents)
+    .where(eq(agents.id, targetAgent));
+
+  if (!target) {
+    return { action: 'WHISTLEBLOW', success: false, message: 'Target agent not found' };
+  }
+
+  // Cannot report agents that are not active
+  if (target.status !== 'active') {
+    return { action: 'WHISTLEBLOW', success: false, message: `Cannot report agent with status: ${target.status}` };
+  }
+
+  // Get whistleblower info for reputation update
+  const [whistleblower] = await db
+    .select({ reputation: agents.reputation })
+    .from(agents)
+    .where(eq(agents.id, agentId));
+
+  if (!whistleblower) {
+    return { action: 'WHISTLEBLOW', success: false, message: 'Whistleblower agent not found' };
+  }
+
+  // Create investigation against the target
+  const [investigation] = await db.insert(investigations).values({
+    agentId: targetAgent,
+    crimeType: 'whistleblower_report',
+    evidence: [{
+      tick,
+      type: 'whistleblower_report',
+      whistleblowerId: agentId,
+      evidence,
+      reportedAt: new Date().toISOString(),
+    }],
+    status: 'open',
+    tickOpened: tick,
+  }).returning();
+
+  // Whistleblower gains reputation (civic duty reward: +3)
+  const whistleblowerReputationGain = 3;
+  await db.update(agents)
+    .set({ reputation: Math.min(100, whistleblower.reputation + whistleblowerReputationGain) })
+    .where(eq(agents.id, agentId));
+
+  // Target loses reputation (public accusation: -5)
+  const targetReputationLoss = 5;
+  await db.update(agents)
+    .set({ reputation: Math.max(0, target.reputation - targetReputationLoss) })
+    .where(eq(agents.id, targetAgent));
+
+  // Notify whistleblower that report was filed
+  await db.insert(messages).values({
+    tick,
+    senderId: agentId, // System message from self
+    recipientId: agentId,
+    channel: 'system',
+    content: `Your whistleblower report against agent has been filed with the SEC. Investigation #${investigation.id.substring(0, 8)} opened.`,
+  });
+
+  // Notify target that they are under investigation
+  await db.insert(messages).values({
+    tick,
+    senderId: agentId,
+    recipientId: targetAgent,
+    channel: 'system',
+    content: `You are now under SEC investigation following a whistleblower report. Investigation #${investigation.id.substring(0, 8)}.`,
+  });
+
   return {
     action: 'WHISTLEBLOW',
     success: true,
-    message: 'Report filed with SEC',
-    data: { targetAgent: action.targetAgent },
+    message: 'Whistleblower report filed with SEC. Investigation opened.',
+    data: {
+      targetAgent,
+      investigationId: investigation.id,
+      whistleblowerReputationGain,
+      targetReputationLoss,
+    },
   };
 }
 

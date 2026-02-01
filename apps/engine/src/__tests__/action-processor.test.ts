@@ -1583,5 +1583,666 @@ describe('Action Processor', () => {
         })
       );
     });
+
+    it('processes WHISTLEBLOW action successfully', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockTarget = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'Shady Trader',
+        status: 'active',
+        reputation: 60,
+      };
+
+      const mockInvestigation = {
+        id: '660e8400-e29b-41d4-a716-446655440000',
+        agentId: '550e8400-e29b-41d4-a716-446655440000',
+        crimeType: 'whistleblower_report',
+        status: 'open',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]); // Initial agent lookup
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockTarget]); // Target agent lookup
+            }
+            if (selectCallCount === 3) {
+              return Promise.resolve([{ reputation: 50 }]); // Whistleblower reputation lookup
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([mockInvestigation]),
+        })),
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+              evidence: 'I witnessed this agent engage in pump and dump schemes on MEME stock',
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].action).toBe('WHISTLEBLOW');
+      expect(results[0].results[0].success).toBe(true);
+      expect(results[0].results[0].message).toContain('Investigation opened');
+      expect(results[0].results[0].data?.targetAgent).toBe('550e8400-e29b-41d4-a716-446655440000');
+      expect(results[0].results[0].data?.investigationId).toBe('660e8400-e29b-41d4-a716-446655440000');
+      expect(results[0].results[0].data?.whistleblowerReputationGain).toBe(3);
+      expect(results[0].results[0].data?.targetReputationLoss).toBe(5);
+    });
+
+    it('rejects WHISTLEBLOW action when trying to report yourself', async () => {
+      const agentUuid = '550e8400-e29b-41d4-a716-446655440001';
+      const mockAgent = {
+        id: agentUuid,
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: agentUuid,
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: agentUuid,
+              evidence: 'Trying to report myself for some reason',
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Cannot report yourself');
+    });
+
+    it('rejects WHISTLEBLOW action when target agent not found', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]); // Target not found
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+              evidence: 'Evidence of fraudulent trading activity',
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Target agent not found');
+    });
+
+    it('rejects WHISTLEBLOW action when target agent is not active', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockTarget = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'Imprisoned Trader',
+        status: 'imprisoned',
+        reputation: 10,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockTarget]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+              evidence: 'Evidence of past fraudulent activity',
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Cannot report agent with status: imprisoned');
+    });
+
+    it('creates investigation record with whistleblower evidence', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockTarget = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'Suspect Trader',
+        status: 'active',
+        reputation: 70,
+      };
+
+      const mockInvestigation = {
+        id: '770e8400-e29b-41d4-a716-446655440000',
+        agentId: '550e8400-e29b-41d4-a716-446655440000',
+        crimeType: 'whistleblower_report',
+        status: 'open',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockTarget]);
+            }
+            if (selectCallCount === 3) {
+              return Promise.resolve([{ reputation: 50 }]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([mockInvestigation]),
+      });
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: insertValuesMock,
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      const evidenceText = 'Detailed evidence of market manipulation including specific dates and trades';
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+              evidence: evidenceText,
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      await processWebhookActions(webhookResults, 100);
+
+      // First insert should be for the investigation
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: '550e8400-e29b-41d4-a716-446655440000',
+          crimeType: 'whistleblower_report',
+          status: 'open',
+          tickOpened: 100,
+        })
+      );
+    });
+
+    it('updates reputation for both whistleblower and target', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockTarget = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'Target Trader',
+        status: 'active',
+        reputation: 80,
+      };
+
+      const mockInvestigation = {
+        id: '880e8400-e29b-41d4-a716-446655440000',
+        agentId: '550e8400-e29b-41d4-a716-446655440000',
+        crimeType: 'whistleblower_report',
+        status: 'open',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockTarget]);
+            }
+            if (selectCallCount === 3) {
+              return Promise.resolve([{ reputation: 50 }]); // Whistleblower reputation
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([mockInvestigation]),
+        })),
+      }));
+
+      const updateSetMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: updateSetMock,
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+              evidence: 'Evidence of insider trading with documented proof',
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      await processWebhookActions(webhookResults, 100);
+
+      // Whistleblower gains +3 reputation (50 + 3 = 53)
+      expect(updateSetMock).toHaveBeenCalledWith({ reputation: 53 });
+      // Target loses -5 reputation (80 - 5 = 75)
+      expect(updateSetMock).toHaveBeenCalledWith({ reputation: 75 });
+    });
+
+    it('sends notification messages to both parties', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockTarget = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'Target Trader',
+        status: 'active',
+        reputation: 60,
+      };
+
+      const mockInvestigation = {
+        id: '990e8400-e29b-41d4-a716-446655440000',
+        agentId: '550e8400-e29b-41d4-a716-446655440000',
+        crimeType: 'whistleblower_report',
+        status: 'open',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockTarget]);
+            }
+            if (selectCallCount === 3) {
+              return Promise.resolve([{ reputation: 50 }]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([mockInvestigation]),
+      });
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: insertValuesMock,
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+              evidence: 'Clear evidence of securities fraud',
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      await processWebhookActions(webhookResults, 100);
+
+      // Should have sent message to whistleblower (confirmation)
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tick: 100,
+          recipientId: 'agent-1',
+          channel: 'system',
+        })
+      );
+
+      // Should have sent message to target (notification)
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tick: 100,
+          recipientId: '550e8400-e29b-41d4-a716-446655440000',
+          channel: 'system',
+        })
+      );
+    });
+
+    it('caps whistleblower reputation at 100', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'High Rep Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 99, // Near max
+      };
+
+      const mockTarget = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'Target Trader',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockInvestigation = {
+        id: 'aaa08400-e29b-41d4-a716-446655440000',
+        agentId: '550e8400-e29b-41d4-a716-446655440000',
+        crimeType: 'whistleblower_report',
+        status: 'open',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockTarget]);
+            }
+            if (selectCallCount === 3) {
+              return Promise.resolve([{ reputation: 99 }]); // High reputation
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([mockInvestigation]),
+        })),
+      }));
+
+      const updateSetMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: updateSetMock,
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+              evidence: 'Evidence of market manipulation scheme',
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      await processWebhookActions(webhookResults, 100);
+
+      // Reputation should be capped at 100 (99 + 3 would be 102, but capped)
+      expect(updateSetMock).toHaveBeenCalledWith({ reputation: 100 });
+    });
+
+    it('floors target reputation at 0', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockTarget = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        name: 'Low Rep Trader',
+        status: 'active',
+        reputation: 3, // Very low reputation
+      };
+
+      const mockInvestigation = {
+        id: 'bbb08400-e29b-41d4-a716-446655440000',
+        agentId: '550e8400-e29b-41d4-a716-446655440000',
+        crimeType: 'whistleblower_report',
+        status: 'open',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockTarget]);
+            }
+            if (selectCallCount === 3) {
+              return Promise.resolve([{ reputation: 50 }]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([mockInvestigation]),
+        })),
+      }));
+
+      const updateSetMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: updateSetMock,
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            {
+              type: 'WHISTLEBLOW',
+              targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+              evidence: 'Conclusive evidence of fraudulent activity',
+            },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      await processWebhookActions(webhookResults, 100);
+
+      // Target reputation should be floored at 0 (3 - 5 would be -2, but floored)
+      expect(updateSetMock).toHaveBeenCalledWith({ reputation: 0 });
+    });
   });
 });
