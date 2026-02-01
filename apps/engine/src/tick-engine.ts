@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import type { Company, Trade, PriceUpdate, MarketEvent, WorldState, SectorData, Sector, TickUpdate, Order, OrderType, OrderSide } from '@wallstreetsim/types';
+import type { Company, Trade, PriceUpdate, MarketEvent, WorldState, SectorData, Sector, TickUpdate, Order, OrderType, OrderSide, OrderProcessedEvent } from '@wallstreetsim/types';
 import {
   TICK_INTERVAL_MS,
   MARKET_OPEN_TICK,
@@ -353,6 +353,22 @@ export class TickEngine extends EventEmitter {
           newAvgFillPrice || null,
           newStatus === 'filled' ? this.currentTick : null
         );
+
+        // Emit order processed event
+        const orderEvent: OrderProcessedEvent = {
+          orderId: order.id,
+          agentId: order.agentId,
+          symbol: order.symbol,
+          side: order.side,
+          type: order.type,
+          quantity: order.quantity,
+          price: order.price,
+          status: newStatus,
+          filledQuantity: totalFilledQuantity,
+          avgFillPrice: newAvgFillPrice || undefined,
+          tick: this.currentTick,
+        };
+        this.emit('orderProcessed', orderEvent);
       }
     }
 

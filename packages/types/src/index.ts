@@ -57,6 +57,7 @@ export type {
   CrimeType,
   InvestigationStatus,
   InvestigationEvidence,
+  OrderProcessedEvent,
 } from './events';
 
 // API types
