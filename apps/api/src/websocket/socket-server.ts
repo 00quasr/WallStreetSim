@@ -54,6 +54,15 @@ function isPrivateChannel(channel: string): boolean {
   return PRIVATE_CHANNEL_PREFIXES.some(prefix => channel === prefix || channel.startsWith(`${prefix}:`));
 }
 
+function isAgentChannel(channel: string): boolean {
+  return channel.startsWith('agent:');
+}
+
+function getAgentIdFromChannel(channel: string): string | null {
+  if (!isAgentChannel(channel)) return null;
+  return channel.replace('agent:', '');
+}
+
 function isPublicChannel(channel: string): boolean {
   // Exact match public channels
   if (PUBLIC_CHANNELS.has(channel)) return true;
@@ -324,6 +333,34 @@ export class SocketServer {
     const failedChannels: { channel: string; reason: string }[] = [];
 
     for (const channel of channels) {
+      // Check if this is an agent-specific channel (agent:*)
+      if (isAgentChannel(channel)) {
+        const targetAgentId = getAgentIdFromChannel(channel);
+        if (!socket.agentId) {
+          // Agent channel requires authentication
+          failedChannels.push({
+            channel,
+            reason: 'Authentication required for agent channels',
+          });
+          continue;
+        }
+        if (targetAgentId !== socket.agentId) {
+          // Can only subscribe to own agent channel
+          failedChannels.push({
+            channel,
+            reason: 'Can only subscribe to own agent channel',
+          });
+          continue;
+        }
+        // Join the agent-specific room (already joined on auth, but allow explicit subscription)
+        socket.join(`agent:${socket.agentId}`);
+        // Subscribe to agent-specific Redis channel
+        this.subscribeToRedisChannel(CHANNELS.AGENT_UPDATES(socket.agentId));
+        subscribedChannels.push(channel);
+        console.log(`[Socket.io] Client ${socket.id} (agent: ${socket.agentId}) subscribed to agent channel: ${channel}`);
+        continue;
+      }
+
       // Check if this is a private channel
       if (isPrivateChannel(channel)) {
         if (!socket.agentId) {
@@ -419,6 +456,17 @@ export class SocketServer {
     const unsubscribedChannels: string[] = [];
 
     for (const channel of channels) {
+      // Check if this is an agent-specific channel (agent:*)
+      if (isAgentChannel(channel)) {
+        const targetAgentId = getAgentIdFromChannel(channel);
+        // Only allow unsubscribing from own agent channel
+        if (socket.agentId && targetAgentId === socket.agentId) {
+          socket.leave(`agent:${socket.agentId}`);
+          unsubscribedChannels.push(channel);
+        }
+        continue;
+      }
+
       // Check if this is a private channel
       if (isPrivateChannel(channel)) {
         if (socket.agentId) {

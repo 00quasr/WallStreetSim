@@ -845,4 +845,172 @@ describe('SocketServer', () => {
       });
     });
   });
+
+  describe('agent:* private channels', () => {
+    it('should reject agent channel subscription without authentication', async () => {
+      const client = await connectClient();
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[]; failed?: { channel: string; reason: string }[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      client.emit('SUBSCRIBE', { channels: ['agent:someagent'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toHaveLength(0);
+      expect(result.payload.failed).toBeDefined();
+      expect(result.payload.failed).toHaveLength(1);
+      expect(result.payload.failed![0].channel).toBe('agent:someagent');
+      expect(result.payload.failed![0].reason).toContain('Authentication required');
+    });
+
+    it('should reject subscription to another agent\'s channel', async () => {
+      const client = await connectClient();
+
+      // First authenticate as agent123
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[]; failed?: { channel: string; reason: string }[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      // Try to subscribe to a different agent's channel
+      client.emit('SUBSCRIBE', { channels: ['agent:differentagent'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toHaveLength(0);
+      expect(result.payload.failed).toBeDefined();
+      expect(result.payload.failed).toHaveLength(1);
+      expect(result.payload.failed![0].channel).toBe('agent:differentagent');
+      expect(result.payload.failed![0].reason).toContain('Can only subscribe to own agent channel');
+    });
+
+    it('should allow subscription to own agent channel after authentication', async () => {
+      const client = await connectClient();
+
+      // First authenticate as agent123
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[]; failed?: { channel: string; reason: string }[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      // Subscribe to own agent channel
+      client.emit('SUBSCRIBE', { channels: ['agent:agent123'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('agent:agent123');
+      expect(result.payload.failed).toBeUndefined();
+    });
+
+    it('should allow unsubscribing from own agent channel', async () => {
+      const client = await connectClient();
+
+      // First authenticate
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Subscribe to own agent channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['agent:agent123'] });
+      });
+
+      // Remove SUBSCRIBED listener before setting up UNSUBSCRIBED
+      client.removeAllListeners('SUBSCRIBED');
+
+      // Unsubscribe
+      const unsubPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('UNSUBSCRIBED', resolve);
+      });
+
+      client.emit('UNSUBSCRIBE', { channels: ['agent:agent123'] });
+
+      const result = await unsubPromise;
+      expect(result.type).toBe('UNSUBSCRIBED');
+      expect(result.payload.channels).toContain('agent:agent123');
+    });
+
+    it('should not allow unsubscribing from another agent\'s channel', async () => {
+      const client = await connectClient();
+
+      // First authenticate
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Try to unsubscribe from another agent's channel
+      const unsubPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('UNSUBSCRIBED', resolve);
+      });
+
+      client.emit('UNSUBSCRIBE', { channels: ['agent:differentagent'] });
+
+      const result = await unsubPromise;
+      expect(result.type).toBe('UNSUBSCRIBED');
+      // Should not include the other agent's channel in the unsubscribed list
+      expect(result.payload.channels).not.toContain('agent:differentagent');
+    });
+
+    it('should allow mixed public, private, and agent channel subscription when authenticated', async () => {
+      const client = await connectClient();
+
+      // First authenticate
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[]; failed?: { channel: string; reason: string }[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      // Subscribe to public, private, and agent channels
+      client.emit('SUBSCRIBE', { channels: ['market', 'portfolio', 'agent:agent123'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('market');
+      expect(result.payload.channels).toContain('portfolio');
+      expect(result.payload.channels).toContain('agent:agent123');
+      expect(result.payload.failed).toBeUndefined();
+    });
+
+    it('should reject other agent channels while allowing own in the same request', async () => {
+      const client = await connectClient();
+
+      // First authenticate as agent123
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[]; failed?: { channel: string; reason: string }[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      // Try to subscribe to own and other agent channels
+      client.emit('SUBSCRIBE', { channels: ['agent:agent123', 'agent:otheragent'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('agent:agent123');
+      expect(result.payload.channels).not.toContain('agent:otheragent');
+      expect(result.payload.failed).toBeDefined();
+      expect(result.payload.failed).toHaveLength(1);
+      expect(result.payload.failed![0].channel).toBe('agent:otheragent');
+    });
+  });
 });
