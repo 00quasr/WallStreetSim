@@ -90,6 +90,127 @@ describe('SocketServer', () => {
       await connectClient();
       expect(socketServer.getConnectedCount()).toBe(1);
     });
+
+    it('should emit CONNECTED event with public channel info on connection', async () => {
+      const connectedPromise = new Promise<{
+        type: string;
+        payload: {
+          socketId: string;
+          authenticated: boolean;
+          publicChannels: string[];
+          message: string;
+        };
+        timestamp: string;
+      }>((resolve) => {
+        clientSocket = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        clientSocket.on('CONNECTED', resolve);
+      });
+
+      const result = await connectedPromise;
+      expect(result.type).toBe('CONNECTED');
+      expect(result.payload.authenticated).toBe(false);
+      expect(result.payload.publicChannels).toContain('tick_updates');
+      expect(result.payload.publicChannels).toContain('market');
+      expect(result.payload.publicChannels).toContain('prices');
+      expect(result.payload.publicChannels).toContain('news');
+      expect(result.payload.publicChannels).toContain('leaderboard');
+      expect(result.payload.socketId).toBeDefined();
+    });
+  });
+
+  describe('unauthenticated access', () => {
+    it('should allow clients to connect without authentication', async () => {
+      const client = await connectClient();
+      expect(client.connected).toBe(true);
+      // Client should not have an auth token but still be connected
+    });
+
+    it('should allow unauthenticated clients to subscribe to public channels', async () => {
+      const client = await connectClient();
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[]; failed?: { channel: string; reason: string }[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      // Subscribe to all public channels without authentication
+      client.emit('SUBSCRIBE', { channels: ['market', 'prices', 'news', 'leaderboard', 'tick_updates'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('market');
+      expect(result.payload.channels).toContain('prices');
+      expect(result.payload.channels).toContain('news');
+      expect(result.payload.channels).toContain('leaderboard');
+      expect(result.payload.channels).toContain('tick_updates');
+      expect(result.payload.failed).toBeUndefined();
+    });
+
+    it('should allow unauthenticated clients to subscribe to symbol-specific channels', async () => {
+      const client = await connectClient();
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      client.emit('SUBSCRIBE', { channels: ['symbol:APEX', 'symbol:NOVA', 'symbol:QUANTUM'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toContain('symbol:APEX');
+      expect(result.payload.channels).toContain('symbol:NOVA');
+      expect(result.payload.channels).toContain('symbol:QUANTUM');
+    });
+
+    it('should automatically join tick_updates room on connect', async () => {
+      const client = await connectClient();
+
+      // The client should already be in tick_updates room
+      // We verify by unsubscribing (which would fail if not subscribed)
+      const unsubPromise = new Promise<{ type: string; payload: { channels: string[] } }>((resolve) => {
+        client.on('UNSUBSCRIBED', resolve);
+      });
+
+      client.emit('UNSUBSCRIBE', { channels: ['tick_updates'] });
+
+      const result = await unsubPromise;
+      expect(result.type).toBe('UNSUBSCRIBED');
+      expect(result.payload.channels).toContain('tick_updates');
+    });
+
+    it('should reject unauthenticated clients from private channels', async () => {
+      const client = await connectClient();
+
+      const subPromise = new Promise<{ type: string; payload: { channels: string[]; failed?: { channel: string; reason: string }[] } }>((resolve) => {
+        client.on('SUBSCRIBED', resolve);
+      });
+
+      client.emit('SUBSCRIBE', { channels: ['portfolio', 'orders', 'messages', 'alerts', 'investigations'] });
+
+      const result = await subPromise;
+      expect(result.type).toBe('SUBSCRIBED');
+      expect(result.payload.channels).toHaveLength(0);
+      expect(result.payload.failed).toBeDefined();
+      expect(result.payload.failed).toHaveLength(5);
+      for (const failure of result.payload.failed!) {
+        expect(failure.reason).toContain('Authentication required');
+      }
+    });
+
+    it('should allow PING/PONG without authentication', async () => {
+      const client = await connectClient();
+
+      const pongPromise = new Promise<{ type: string; timestamp: string }>((resolve) => {
+        client.on('PONG', resolve);
+      });
+
+      client.emit('PING');
+
+      const pong = await pongPromise;
+      expect(pong.type).toBe('PONG');
+      expect(pong.timestamp).toBeDefined();
+    });
   });
 
   describe('PING/PONG', () => {

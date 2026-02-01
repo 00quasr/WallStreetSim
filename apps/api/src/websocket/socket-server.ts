@@ -194,8 +194,21 @@ export class SocketServer {
     this.io.on('connection', (socket: AuthenticatedSocket) => {
       console.log(`[Socket.io] Client connected: ${socket.id}`);
 
-      // Auto-join tick updates room
+      // Auto-join tick updates room - clients can connect without authentication
+      // and receive public data (tick updates, prices, news, etc.)
       socket.join('tick_updates');
+
+      // Emit connected event with available public channels
+      socket.emit('CONNECTED', {
+        type: 'CONNECTED',
+        payload: {
+          socketId: socket.id,
+          authenticated: false,
+          publicChannels: ['tick_updates', 'market', 'prices', 'news', 'leaderboard'],
+          message: 'Connected to WallStreetSim. Authentication optional for public data.',
+        },
+        timestamp: new Date().toISOString(),
+      });
 
       // Handle authentication
       socket.on('AUTH', (data: { apiKey: string }) => {
