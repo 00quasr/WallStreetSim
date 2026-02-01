@@ -320,8 +320,9 @@ describe('TickEngine Price Updates', () => {
       expect(aaplUpdate!.change).toBeCloseTo(expectedChange, 10);
 
       // Change percent should be (change / oldPrice) * 100
+      // Note: changePercent is rounded to 2 decimal places in price-engine.ts:134
       const expectedChangePercent = (aaplUpdate!.change / aaplUpdate!.oldPrice) * 100;
-      expect(aaplUpdate!.changePercent).toBeCloseTo(expectedChangePercent, 5);
+      expect(aaplUpdate!.changePercent).toBeCloseTo(expectedChangePercent, 1);
     });
   });
 
