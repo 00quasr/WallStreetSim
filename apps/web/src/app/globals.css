@@ -1,0 +1,102 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --terminal-bg: #0a0a0a;
+  --terminal-text: #33ff33;
+  --terminal-dim: #1a5c1a;
+  --terminal-highlight: #66ff66;
+  --terminal-blue: #3b82f6;
+  --terminal-red: #ff3333;
+  --terminal-yellow: #ffff33;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  background-color: var(--terminal-bg);
+  color: var(--terminal-text);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* CRT screen effect */
+.crt-effect {
+  position: relative;
+}
+
+.crt-effect::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    transparent 50%,
+    rgba(0, 0, 0, 0.1) 50%
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Scanline animation */
+.scanline {
+  position: absolute;
+  width: 100%;
+  height: 4px;
+  background: rgba(51, 255, 51, 0.1);
+  animation: scanline 8s linear infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Text glow effect */
+.text-glow {
+  text-shadow: 0 0 5px var(--terminal-text), 0 0 10px var(--terminal-text);
+}
+
+/* Selection styling */
+::selection {
+  background-color: var(--terminal-text);
+  color: var(--terminal-bg);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--terminal-bg);
+  border: 1px solid var(--terminal-dim);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--terminal-dim);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--terminal-text);
+}
+
+/* Cursor blink */
+.cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.2em;
+  background-color: var(--terminal-text);
+  animation: blink 1s step-end infinite;
+  vertical-align: text-bottom;
+}
+
+/* Flicker effect for active elements */
+.flicker {
+  animation: flicker 0.15s infinite;
+}
