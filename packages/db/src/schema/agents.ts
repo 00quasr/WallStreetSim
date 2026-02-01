@@ -1,5 +1,6 @@
 import { pgTable, uuid, varchar, decimal, timestamp, text, jsonb, integer, index } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+import { alliances } from './alliances';
 
 export const agents = pgTable('agents', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -8,6 +9,9 @@ export const agents = pgTable('agents', {
   apiKeyHash: varchar('api_key_hash', { length: 255 }).notNull(),
   callbackUrl: text('callback_url'),
   webhookSecret: varchar('webhook_secret', { length: 64 }),
+
+  // Alliance membership (nullable - agent may not be in an alliance)
+  allianceId: uuid('alliance_id').references(() => alliances.id),
 
   // Financials
   cash: decimal('cash', { precision: 20, scale: 2 }).notNull().default('0'),
@@ -37,9 +41,14 @@ export const agents = pgTable('agents', {
 }, (table) => ({
   nameIdx: index('agents_name_idx').on(table.name),
   statusIdx: index('agents_status_idx').on(table.status),
+  allianceIdx: index('agents_alliance_idx').on(table.allianceId),
 }));
 
-export const agentsRelations = relations(agents, ({ many }) => ({
+export const agentsRelations = relations(agents, ({ one, many }) => ({
+  alliance: one(alliances, {
+    fields: [agents.allianceId],
+    references: [alliances.id],
+  }),
   holdings: many(holdings),
   orders: many(orders),
   buyTrades: many(trades, { relationName: 'buyTrades' }),
