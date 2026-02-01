@@ -7,9 +7,29 @@ import {
   retryWithBackoff,
   isRetryableStatusCode,
   RETRY_PROFILES,
+  CircuitBreakerRegistry,
+  createWebhookCircuitRegistry,
+  CircuitOpenError,
 } from '@wallstreetsim/utils';
-import type { RetryResult } from '@wallstreetsim/utils';
+import type { RetryResult, CircuitState } from '@wallstreetsim/utils';
 import * as dbService from './db';
+
+// Circuit breaker registry for managing per-agent circuits
+const circuitRegistry = createWebhookCircuitRegistry();
+
+// Configure state change logging
+circuitRegistry.get('_config', {
+  onStateChange: (state: CircuitState, previousState: CircuitState) => {
+    console.log(`Circuit breaker state changed: ${previousState} -> ${state}`);
+  },
+});
+
+/**
+ * Get the circuit breaker registry (for testing and monitoring)
+ */
+export function getCircuitRegistry(): CircuitBreakerRegistry {
+  return circuitRegistry;
+}
 
 interface AgentWithCallback {
   id: string;
@@ -29,6 +49,8 @@ interface WebhookResult {
   error?: string;
   responseTimeMs: number;
   attempts?: number;
+  /** True if the webhook was skipped due to circuit breaker being open */
+  circuitBreakerSkipped?: boolean;
 }
 
 interface WebhookDispatcherConfig {
@@ -288,7 +310,7 @@ function shouldRetryWebhook(error: unknown): boolean {
 }
 
 /**
- * Send webhook to a single agent with retry logic
+ * Send webhook to a single agent with retry logic and circuit breaker protection
  */
 async function sendWebhook(
   agent: AgentWithCallback,
@@ -296,6 +318,30 @@ async function sendWebhook(
   config: WebhookDispatcherConfig
 ): Promise<WebhookResult> {
   const startTime = Date.now();
+
+  // Check circuit breaker before attempting webhook
+  const circuit = circuitRegistry.get(agent.id, {
+    failureThreshold: 5, // Open after 5 consecutive failures
+    recoveryTimeMs: 60000, // Wait 1 minute before retrying
+    successThreshold: 2, // Need 2 successes in half-open to close
+    onStateChange: (state, previousState) => {
+      console.log(`  Circuit breaker for agent ${agent.id}: ${previousState} -> ${state}`);
+    },
+  });
+
+  // If circuit is open, skip this agent to avoid wasting resources
+  if (!circuit.isAllowed()) {
+    const msUntilRetry = circuit.getMsUntilRetry();
+    return {
+      agentId: agent.id,
+      success: false,
+      error: `Circuit breaker open. Retry in ${Math.ceil(msUntilRetry / 1000)}s`,
+      responseTimeMs: 0,
+      attempts: 0,
+      circuitBreakerSkipped: true,
+    };
+  }
+
   const body = JSON.stringify(payload);
 
   // Build headers
@@ -327,6 +373,8 @@ async function sendWebhook(
   const responseTimeMs = Date.now() - startTime;
 
   if (retryResult.success && retryResult.data) {
+    // Record success with circuit breaker
+    circuit.recordSuccess();
     return {
       agentId: agent.id,
       success: true,
@@ -336,6 +384,9 @@ async function sendWebhook(
       attempts: retryResult.attempts,
     };
   }
+
+  // Record failure with circuit breaker
+  circuit.recordFailure();
 
   // Extract error details from the last error
   const lastError = retryResult.error;
@@ -404,9 +455,13 @@ export async function dispatchWebhooks(
     })
   );
 
-  // Track failures/successes per agent
+  // Track failures/successes per agent (skip circuit breaker skipped ones)
   await Promise.all(
     results.map(async (result) => {
+      // Don't record metrics for circuit breaker skipped webhooks
+      if (result.circuitBreakerSkipped) {
+        return;
+      }
       if (result.success) {
         await dbService.recordWebhookSuccess(result.agentId, result.responseTimeMs);
       } else {
@@ -417,12 +472,14 @@ export async function dispatchWebhooks(
 
   // Log results
   const successful = results.filter(r => r.success).length;
-  const failed = results.filter(r => !r.success).length;
+  const failed = results.filter(r => !r.success && !r.circuitBreakerSkipped).length;
+  const skipped = results.filter(r => r.circuitBreakerSkipped).length;
   const retriedCount = results.filter(r => (r.attempts ?? 1) > 1).length;
 
   if (results.length > 0) {
     const retryInfo = retriedCount > 0 ? ` (${retriedCount} required retries)` : '';
-    console.log(`  Webhooks: ${successful} delivered, ${failed} failed${retryInfo}`);
+    const skippedInfo = skipped > 0 ? `, ${skipped} skipped (circuit breaker)` : '';
+    console.log(`  Webhooks: ${successful} delivered, ${failed} failed${skippedInfo}${retryInfo}`);
   }
 
   return results;

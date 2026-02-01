@@ -132,3 +132,17 @@ export {
 } from './retry';
 
 export type { RetryConfig, RetryResult } from './retry';
+
+// Circuit Breaker utilities
+export {
+  CircuitBreaker,
+  CircuitBreakerRegistry,
+  CircuitOpenError,
+  createWebhookCircuitRegistry,
+} from './circuit-breaker';
+
+export type {
+  CircuitState,
+  CircuitBreakerConfig,
+  CircuitStats,
+} from './circuit-breaker';
