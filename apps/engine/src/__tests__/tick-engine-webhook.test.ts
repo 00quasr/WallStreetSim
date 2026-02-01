@@ -72,9 +72,14 @@ vi.mock('../services/webhook', () => ({
   dispatchWebhooks: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock('../services/action-processor', () => ({
+  processWebhookActions: vi.fn().mockResolvedValue([]),
+}));
+
 import { TickEngine } from '../tick-engine';
 import * as dbService from '../services/db';
 import * as webhookService from '../services/webhook';
+import * as actionProcessor from '../services/action-processor';
 
 describe('TickEngine Webhook Integration', () => {
   let engine: TickEngine;
@@ -316,6 +321,108 @@ describe('TickEngine Webhook Integration', () => {
       const webhookIndex = callOrder.indexOf('dispatchWebhooks');
 
       expect(publishIndex).toBeLessThan(webhookIndex);
+    });
+  });
+
+  describe('action processing from webhook responses', () => {
+    it('processes actions returned by webhooks', async () => {
+      const mockWebhookResults = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [{ type: 'BUY', symbol: 'AAPL', quantity: 100 }],
+          responseTimeMs: 50,
+        },
+      ];
+
+      (webhookService.dispatchWebhooks as Mock).mockResolvedValueOnce(mockWebhookResults);
+
+      await engine.runTick();
+
+      expect(actionProcessor.processWebhookActions).toHaveBeenCalledWith(mockWebhookResults, 1);
+    });
+
+    it('passes correct tick number to action processor', async () => {
+      const mockWebhookResults = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [{ type: 'SELL', symbol: 'GOOG', quantity: 50 }],
+          responseTimeMs: 30,
+        },
+      ];
+
+      (webhookService.dispatchWebhooks as Mock).mockResolvedValue(mockWebhookResults);
+
+      await engine.runTick();
+      await engine.runTick();
+      await engine.runTick();
+
+      const processMock = actionProcessor.processWebhookActions as Mock;
+      expect(processMock).toHaveBeenCalledTimes(3);
+      expect(processMock.mock.calls[0][1]).toBe(1);
+      expect(processMock.mock.calls[1][1]).toBe(2);
+      expect(processMock.mock.calls[2][1]).toBe(3);
+    });
+
+    it('does not process actions if world state is null', async () => {
+      vi.clearAllMocks();
+
+      (dbService.getWorldState as Mock)
+        .mockResolvedValueOnce({
+          currentTick: 0,
+          marketOpen: true,
+          interestRate: 0.05,
+          inflationRate: 0.02,
+          gdpGrowth: 0.03,
+          regime: 'normal',
+          lastTickAt: new Date(),
+        })
+        .mockResolvedValueOnce(null);
+
+      const testEngine = new TickEngine({
+        tickIntervalMs: 1000,
+        enableEvents: false,
+        eventChance: 0,
+      });
+
+      await testEngine.initialize();
+      vi.clearAllMocks();
+
+      await testEngine.runTick();
+
+      expect(actionProcessor.processWebhookActions).not.toHaveBeenCalled();
+    });
+
+    it('processes actions after webhook dispatch completes', async () => {
+      const callOrder: string[] = [];
+
+      (webhookService.dispatchWebhooks as Mock).mockImplementation(() => {
+        callOrder.push('dispatchWebhooks');
+        return Promise.resolve([
+          {
+            agentId: 'agent-1',
+            success: true,
+            statusCode: 200,
+            actions: [{ type: 'BUY', symbol: 'AAPL', quantity: 100 }],
+            responseTimeMs: 50,
+          },
+        ]);
+      });
+
+      (actionProcessor.processWebhookActions as Mock).mockImplementation(() => {
+        callOrder.push('processWebhookActions');
+        return Promise.resolve([]);
+      });
+
+      await engine.runTick();
+
+      const webhookIndex = callOrder.indexOf('dispatchWebhooks');
+      const actionIndex = callOrder.indexOf('processWebhookActions');
+
+      expect(webhookIndex).toBeLessThan(actionIndex);
     });
   });
 });

@@ -13,6 +13,7 @@ import { EventGenerator } from './event-generator';
 import * as dbService from './services/db';
 import * as redisService from './services/redis';
 import * as webhookService from './services/webhook';
+import * as actionProcessor from './services/action-processor';
 
 interface TickEngineConfig {
   tickIntervalMs: number;
@@ -295,10 +296,10 @@ export class TickEngine extends EventEmitter {
       }
     }
 
-    // Dispatch webhooks to agents with callback URLs
+    // Dispatch webhooks to agents with callback URLs and process their action responses
     const worldState = await dbService.getWorldState();
     if (worldState) {
-      await webhookService.dispatchWebhooks(
+      const webhookResults = await webhookService.dispatchWebhooks(
         this.currentTick,
         worldState,
         priceUpdates,
@@ -306,6 +307,9 @@ export class TickEngine extends EventEmitter {
         events,
         tickUpdate.news
       );
+
+      // Process actions returned by agents in webhook responses
+      await actionProcessor.processWebhookActions(webhookResults, this.currentTick);
     }
 
     // Emit tick event
