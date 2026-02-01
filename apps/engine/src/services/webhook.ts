@@ -2,11 +2,13 @@ import { db, agents, holdings } from '@wallstreetsim/db';
 import { eq, and, isNotNull } from 'drizzle-orm';
 import type { TickWebhook, AgentAction } from '@wallstreetsim/types';
 import type { PriceUpdate, Trade, MarketEvent, NewsArticle, WorldState } from '@wallstreetsim/types';
+import { signWebhookPayload } from '@wallstreetsim/utils';
 
 interface AgentWithCallback {
   id: string;
   name: string;
   callbackUrl: string;
+  webhookSecret: string | null;
   cash: string;
   marginUsed: string;
   marginLimit: string;
@@ -41,6 +43,7 @@ export async function getAgentsWithCallbacks(): Promise<AgentWithCallback[]> {
     id: agents.id,
     name: agents.name,
     callbackUrl: agents.callbackUrl,
+    webhookSecret: agents.webhookSecret,
     cash: agents.cash,
     marginUsed: agents.marginUsed,
     marginLimit: agents.marginLimit,
@@ -160,14 +163,24 @@ async function sendWebhook(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
 
+    const body = JSON.stringify(payload);
+
+    // Build headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-WallStreetSim-Tick': payload.tick.toString(),
+      'X-WallStreetSim-Agent': agent.id,
+    };
+
+    // Add HMAC signature if agent has a webhook secret
+    if (agent.webhookSecret) {
+      headers['X-WallStreetSim-Signature'] = signWebhookPayload(body, agent.webhookSecret);
+    }
+
     const response = await fetch(agent.callbackUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-WallStreetSim-Tick': payload.tick.toString(),
-        'X-WallStreetSim-Agent': agent.id,
-      },
-      body: JSON.stringify(payload),
+      headers,
+      body,
       signal: controller.signal,
     });
 
@@ -188,9 +201,9 @@ async function sendWebhook(
     // Parse response for actions
     let actions: AgentAction[] | undefined;
     try {
-      const body = await response.json() as { actions?: AgentAction[] };
-      if (body.actions && Array.isArray(body.actions)) {
-        actions = body.actions;
+      const responseBody = await response.json() as { actions?: AgentAction[] };
+      if (responseBody.actions && Array.isArray(responseBody.actions)) {
+        actions = responseBody.actions;
       }
     } catch {
       // Response may not have a body or may not be JSON

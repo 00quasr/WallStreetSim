@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes } from 'crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 
 /**
  * Generate a random API key
@@ -158,4 +158,51 @@ export function verifySessionToken(
   } catch {
     return null;
   }
+}
+
+/**
+ * Generate a random webhook secret
+ */
+export function generateWebhookSecret(): string {
+  return randomBytes(32).toString('hex');
+}
+
+/**
+ * Create an HMAC-SHA256 signature for a webhook payload
+ * The signature format is: sha256=<hex-digest>
+ */
+export function signWebhookPayload(payload: string, secret: string): string {
+  const signature = createHmac('sha256', secret)
+    .update(payload, 'utf8')
+    .digest('hex');
+  return `sha256=${signature}`;
+}
+
+/**
+ * Verify a webhook signature using timing-safe comparison
+ * @param payload - The raw JSON payload string
+ * @param signature - The signature header value (format: sha256=<hex>)
+ * @param secret - The webhook secret
+ * @returns true if signature is valid
+ */
+export function verifyWebhookSignature(
+  payload: string,
+  signature: string,
+  secret: string
+): boolean {
+  if (!signature.startsWith('sha256=')) {
+    return false;
+  }
+
+  const expectedSignature = signWebhookPayload(payload, secret);
+
+  // Use timing-safe comparison to prevent timing attacks
+  const sigBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+
+  if (sigBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(sigBuffer, expectedBuffer);
 }

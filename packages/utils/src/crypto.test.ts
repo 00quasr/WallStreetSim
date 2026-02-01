@@ -9,6 +9,9 @@ import {
   generateHash,
   createSessionToken,
   verifySessionToken,
+  generateWebhookSecret,
+  signWebhookPayload,
+  verifyWebhookSignature,
 } from './crypto';
 
 describe('Crypto Utilities', () => {
@@ -234,6 +237,100 @@ describe('Crypto Utilities', () => {
 
         const payload = verifySessionToken(malformedToken, secret);
         expect(payload).toBeNull();
+      });
+    });
+  });
+
+  describe('Webhook Signature', () => {
+    const testPayload = JSON.stringify({
+      tick: 100,
+      timestamp: '2024-01-01T00:00:00.000Z',
+      portfolio: { cash: 10000 },
+    });
+
+    describe('generateWebhookSecret', () => {
+      it('should generate 64-character hex string', () => {
+        const secret = generateWebhookSecret();
+        expect(secret).toMatch(/^[a-f0-9]{64}$/);
+      });
+
+      it('should generate unique secrets', () => {
+        const secrets = new Set<string>();
+        for (let i = 0; i < 100; i++) {
+          secrets.add(generateWebhookSecret());
+        }
+        expect(secrets.size).toBe(100);
+      });
+    });
+
+    describe('signWebhookPayload', () => {
+      it('should produce signature with sha256= prefix', () => {
+        const secret = 'test-webhook-secret';
+        const signature = signWebhookPayload(testPayload, secret);
+        expect(signature).toMatch(/^sha256=[a-f0-9]{64}$/);
+      });
+
+      it('should produce consistent signature for same payload and secret', () => {
+        const secret = 'test-webhook-secret';
+        const sig1 = signWebhookPayload(testPayload, secret);
+        const sig2 = signWebhookPayload(testPayload, secret);
+        expect(sig1).toBe(sig2);
+      });
+
+      it('should produce different signatures for different payloads', () => {
+        const secret = 'test-webhook-secret';
+        const sig1 = signWebhookPayload('{"tick":100}', secret);
+        const sig2 = signWebhookPayload('{"tick":101}', secret);
+        expect(sig1).not.toBe(sig2);
+      });
+
+      it('should produce different signatures for different secrets', () => {
+        const sig1 = signWebhookPayload(testPayload, 'secret1');
+        const sig2 = signWebhookPayload(testPayload, 'secret2');
+        expect(sig1).not.toBe(sig2);
+      });
+    });
+
+    describe('verifyWebhookSignature', () => {
+      it('should verify valid signature', () => {
+        const secret = 'test-webhook-secret';
+        const signature = signWebhookPayload(testPayload, secret);
+        expect(verifyWebhookSignature(testPayload, signature, secret)).toBe(true);
+      });
+
+      it('should reject signature with wrong secret', () => {
+        const signature = signWebhookPayload(testPayload, 'correct-secret');
+        expect(verifyWebhookSignature(testPayload, signature, 'wrong-secret')).toBe(false);
+      });
+
+      it('should reject signature for modified payload', () => {
+        const secret = 'test-webhook-secret';
+        const signature = signWebhookPayload(testPayload, secret);
+        const modifiedPayload = testPayload.replace('100', '999');
+        expect(verifyWebhookSignature(modifiedPayload, signature, secret)).toBe(false);
+      });
+
+      it('should reject signature without sha256= prefix', () => {
+        const secret = 'test-webhook-secret';
+        const signature = signWebhookPayload(testPayload, secret);
+        // Remove the sha256= prefix
+        const rawSignature = signature.replace('sha256=', '');
+        expect(verifyWebhookSignature(testPayload, rawSignature, secret)).toBe(false);
+      });
+
+      it('should reject invalid signature format', () => {
+        const secret = 'test-webhook-secret';
+        expect(verifyWebhookSignature(testPayload, 'invalid', secret)).toBe(false);
+        expect(verifyWebhookSignature(testPayload, 'sha256=', secret)).toBe(false);
+        expect(verifyWebhookSignature(testPayload, 'md5=abc123', secret)).toBe(false);
+      });
+
+      it('should reject tampered signature', () => {
+        const secret = 'test-webhook-secret';
+        const signature = signWebhookPayload(testPayload, secret);
+        // Change one character in the signature
+        const tamperedSig = signature.slice(0, -1) + (signature.slice(-1) === 'a' ? 'b' : 'a');
+        expect(verifyWebhookSignature(testPayload, tamperedSig, secret)).toBe(false);
       });
     });
   });

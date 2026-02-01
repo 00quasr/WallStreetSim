@@ -89,6 +89,9 @@ export {
   generateHash,
   createSessionToken,
   verifySessionToken,
+  generateWebhookSecret,
+  signWebhookPayload,
+  verifyWebhookSignature,
 } from './crypto';
 
 export type { SessionTokenPayload } from './crypto';

@@ -7,6 +7,7 @@ export const agents = pgTable('agents', {
   role: varchar('role', { length: 30 }).notNull(),
   apiKeyHash: varchar('api_key_hash', { length: 255 }).notNull(),
   callbackUrl: text('callback_url'),
+  webhookSecret: varchar('webhook_secret', { length: 64 }),
 
   // Financials
   cash: decimal('cash', { precision: 20, scale: 2 }).notNull().default('0'),

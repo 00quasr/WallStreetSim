@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach, type Mock } from 'vitest';
+import { signWebhookPayload, verifyWebhookSignature } from '@wallstreetsim/utils';
 
 // Mock the database module
 vi.mock('@wallstreetsim/db', () => ({
@@ -41,6 +42,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
@@ -49,6 +51,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-2',
           name: 'Agent Two',
           callbackUrl: 'https://agent2.example.com/webhook',
+          webhookSecret: 'secret2',
           cash: '25000.00',
           marginUsed: '1000.00',
           marginLimit: '100000.00',
@@ -75,6 +78,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
@@ -83,6 +87,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-2',
           name: 'Agent Two',
           callbackUrl: null,
+          webhookSecret: null,
           cash: '25000.00',
           marginUsed: '1000.00',
           marginLimit: '100000.00',
@@ -119,6 +124,7 @@ describe('Webhook Dispatcher', () => {
       id: 'agent-1',
       name: 'Test Agent',
       callbackUrl: 'https://example.com/webhook',
+      webhookSecret: 'test-secret',
       cash: '10000.00',
       marginUsed: '0.00',
       marginLimit: '50000.00',
@@ -385,6 +391,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
@@ -393,6 +400,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-2',
           name: 'Agent Two',
           callbackUrl: 'https://agent2.example.com/webhook',
+          webhookSecret: 'secret2',
           cash: '25000.00',
           marginUsed: '1000.00',
           marginLimit: '100000.00',
@@ -439,6 +447,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'test-secret-123',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
@@ -474,9 +483,94 @@ describe('Webhook Dispatcher', () => {
             'Content-Type': 'application/json',
             'X-WallStreetSim-Tick': '100',
             'X-WallStreetSim-Agent': 'agent-1',
+            'X-WallStreetSim-Signature': expect.stringMatching(/^sha256=[a-f0-9]{64}$/),
           }),
         })
       );
+    });
+
+    it('includes verifiable HMAC signature when agent has webhook secret', async () => {
+      const webhookSecret = 'my-test-secret-for-verification';
+      const mockAgents = [
+        {
+          id: 'agent-1',
+          name: 'Agent One',
+          callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret,
+          cash: '10000.00',
+          marginUsed: '0.00',
+          marginLimit: '50000.00',
+        },
+      ];
+
+      let callCount = 0;
+      (db.select as Mock).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              return Promise.resolve(mockAgents);
+            }
+            return Promise.resolve([]);
+          }),
+        }),
+      });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      });
+
+      await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
+
+      // Get the body and signature from the fetch call
+      const fetchCall = mockFetch.mock.calls[0];
+      const body = fetchCall[1].body as string;
+      const signature = fetchCall[1].headers['X-WallStreetSim-Signature'] as string;
+
+      // Verify the signature is valid
+      expect(verifyWebhookSignature(body, signature, webhookSecret)).toBe(true);
+    });
+
+    it('does not include signature header when agent has no webhook secret', async () => {
+      const mockAgents = [
+        {
+          id: 'agent-1',
+          name: 'Agent One',
+          callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: null,
+          cash: '10000.00',
+          marginUsed: '0.00',
+          marginLimit: '50000.00',
+        },
+      ];
+
+      let callCount = 0;
+      (db.select as Mock).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              return Promise.resolve(mockAgents);
+            }
+            return Promise.resolve([]);
+          }),
+        }),
+      });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      });
+
+      await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
+
+      const fetchCall = mockFetch.mock.calls[0];
+      const headers = fetchCall[1].headers as Record<string, string>;
+
+      expect(headers['X-WallStreetSim-Signature']).toBeUndefined();
     });
 
     it('returns success result for successful webhook', async () => {
@@ -485,6 +579,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
@@ -531,6 +626,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
@@ -579,6 +675,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
@@ -621,6 +718,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
@@ -672,6 +770,7 @@ describe('Webhook Dispatcher', () => {
           id: 'agent-1',
           name: 'Agent One',
           callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
           cash: '10000.00',
           marginUsed: '0.00',
           marginLimit: '50000.00',
