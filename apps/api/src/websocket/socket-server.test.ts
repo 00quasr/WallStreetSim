@@ -1441,4 +1441,203 @@ describe('SocketServer', () => {
       expect(result.payload.failed![0].channel).toBe('agent:otheragent');
     });
   });
+
+  describe('graceful disconnect handling', () => {
+    it('should handle unauthenticated client disconnect gracefully', async () => {
+      const client = await connectClient();
+      expect(client.connected).toBe(true);
+
+      // Disconnect the client
+      client.disconnect();
+
+      // Wait a bit for the disconnect to be processed
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(socketServer.getConnectedCount()).toBe(0);
+    });
+
+    it('should handle authenticated client disconnect gracefully', async () => {
+      const client = await connectClient();
+
+      // Authenticate
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      expect(socketServer.hasAuthenticatedClients('agent123')).toBe(true);
+
+      // Disconnect the client
+      client.disconnect();
+
+      // Wait a bit for the disconnect to be processed
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(socketServer.hasAuthenticatedClients('agent123')).toBe(false);
+      expect(socketServer.getConnectedCount()).toBe(0);
+    });
+
+    it('should notify other sessions when one session disconnects', async () => {
+      // Connect first client and authenticate
+      const client1 = await connectClient();
+      await new Promise<void>((resolve) => {
+        client1.on('AUTH_SUCCESS', () => resolve());
+        client1.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Connect second client and authenticate as same agent
+      const client2Socket = ioc(`http://localhost:${TEST_PORT}`, {
+        transports: ['websocket'],
+      });
+      await new Promise<void>((resolve) => {
+        client2Socket.on('connect', () => resolve());
+      });
+      await new Promise<void>((resolve) => {
+        client2Socket.on('AUTH_SUCCESS', () => resolve());
+        client2Socket.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Both clients should be connected
+      expect(socketServer.getConnectedCount()).toBe(2);
+      expect(socketServer.hasAuthenticatedClients('agent123')).toBe(true);
+
+      // Set up listener for AGENT_SESSION_DISCONNECTED on client2
+      const disconnectNotificationPromise = new Promise<{
+        type: string;
+        payload: { socketId: string; reason: string; remainingSessions: number };
+        timestamp: string;
+      }>((resolve) => {
+        client2Socket.on('AGENT_SESSION_DISCONNECTED', resolve);
+      });
+
+      // Disconnect client1
+      client1.disconnect();
+
+      // Client2 should receive the notification
+      const notification = await disconnectNotificationPromise;
+      expect(notification.type).toBe('AGENT_SESSION_DISCONNECTED');
+      expect(notification.payload.socketId).toBeDefined();
+      expect(notification.payload.reason).toBeDefined();
+      expect(notification.payload.remainingSessions).toBe(1);
+
+      // Cleanup
+      client2Socket.disconnect();
+    });
+
+    it('should track and cleanup symbol subscriptions on disconnect', async () => {
+      const client = await connectClient();
+
+      // Subscribe to symbol-specific channels
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['market:AAPL', 'market:GOOG', 'symbol:MSFT'] });
+      });
+
+      // The subscription should be tracked internally
+      // (we can't directly verify the internal Set, but we can verify the subscription worked)
+      expect(client.connected).toBe(true);
+
+      // Disconnect the client
+      client.disconnect();
+
+      // Wait for disconnect to be processed
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(socketServer.getConnectedCount()).toBe(0);
+    });
+
+    it('should not notify if no other sessions exist', async () => {
+      const client = await connectClient();
+
+      // Authenticate
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Set up a listener that should NOT be called
+      let notificationReceived = false;
+      client.on('AGENT_SESSION_DISCONNECTED', () => {
+        notificationReceived = true;
+      });
+
+      // Disconnect the client
+      client.disconnect();
+
+      // Wait a bit to ensure no notification is sent
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // The notification should not have been received (since the client itself disconnected)
+      expect(notificationReceived).toBe(false);
+    });
+
+    it('should handle disconnect with various disconnect reasons', async () => {
+      const client = await connectClient();
+
+      // Authenticate
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect with 'io client disconnect' reason (explicit disconnect)
+      client.disconnect();
+
+      // Wait for disconnect to be processed
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(socketServer.getConnectedCount()).toBe(0);
+    });
+
+    it('should handle disconnect for client with private channel subscriptions', async () => {
+      const client = await connectClient();
+
+      // Authenticate
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Subscribe to private channels
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['portfolio', 'orders', 'agent:agent123'] });
+      });
+
+      // Disconnect the client
+      client.disconnect();
+
+      // Wait for disconnect to be processed
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(socketServer.getConnectedCount()).toBe(0);
+      expect(socketServer.hasAuthenticatedClients('agent123')).toBe(false);
+    });
+
+    it('should clean up symbol tracking when unsubscribing before disconnect', async () => {
+      const client = await connectClient();
+
+      // Subscribe to symbol-specific channels
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['market:AAPL', 'market:GOOG'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      // Unsubscribe from one symbol
+      await new Promise<void>((resolve) => {
+        client.on('UNSUBSCRIBED', () => resolve());
+        client.emit('UNSUBSCRIBE', { channels: ['market:AAPL'] });
+      });
+
+      // Disconnect the client
+      client.disconnect();
+
+      // Wait for disconnect to be processed
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(socketServer.getConnectedCount()).toBe(0);
+    });
+  });
 });

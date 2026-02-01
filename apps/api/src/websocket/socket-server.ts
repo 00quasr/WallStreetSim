@@ -48,6 +48,7 @@ type PrivateChannelType = typeof PRIVATE_CHANNEL_PREFIXES[number];
 interface AuthenticatedSocket extends Socket {
   agentId?: string;
   authenticatedAt?: Date;
+  subscribedSymbols?: Set<string>;
 }
 
 function isPrivateChannel(channel: string): boolean {
@@ -290,7 +291,7 @@ export class SocketServer {
 
       // Handle disconnect
       socket.on('disconnect', (reason) => {
-        console.log(`[Socket.io] Client disconnected: ${socket.id}, reason: ${reason}`);
+        this.handleDisconnect(socket, reason);
       });
     });
   }
@@ -404,6 +405,11 @@ export class SocketServer {
           socket.join(`market:${symbol}`);
           // Subscribe to symbol-specific Redis channel
           this.subscribeToRedisChannel(CHANNELS.MARKET_SYMBOL(symbol));
+          // Track subscribed symbols for disconnect cleanup
+          if (!socket.subscribedSymbols) {
+            socket.subscribedSymbols = new Set();
+          }
+          socket.subscribedSymbols.add(symbol);
           subscribedChannels.push(channel);
         } else if (channel.startsWith('symbol:')) {
           // Legacy symbol-specific: symbol:SYMBOL (e.g., symbol:APEX)
@@ -411,6 +417,11 @@ export class SocketServer {
           socket.join(`symbol:${symbol}`);
           // Subscribe to symbol-specific Redis channel
           this.subscribeToRedisChannel(CHANNELS.SYMBOL_UPDATES(symbol));
+          // Track subscribed symbols for disconnect cleanup
+          if (!socket.subscribedSymbols) {
+            socket.subscribedSymbols = new Set();
+          }
+          socket.subscribedSymbols.add(symbol);
           subscribedChannels.push(channel);
         }
         // Handle other public channels
@@ -481,6 +492,16 @@ export class SocketServer {
       if (isPublicChannel(channel)) {
         socket.leave(channel);
         unsubscribedChannels.push(channel);
+        // Clean up symbol tracking for symbol-specific channels
+        if (socket.subscribedSymbols) {
+          if (channel.startsWith('market:') && channel !== 'market:all') {
+            const symbol = channel.replace('market:', '');
+            socket.subscribedSymbols.delete(symbol);
+          } else if (channel.startsWith('symbol:')) {
+            const symbol = channel.replace('symbol:', '');
+            socket.subscribedSymbols.delete(symbol);
+          }
+        }
       }
     }
 
@@ -491,6 +512,66 @@ export class SocketServer {
     });
 
     console.log(`[Socket.io] Client ${socket.id} unsubscribed from: ${unsubscribedChannels.join(', ')}`);
+  }
+
+  /**
+   * Handle client disconnection gracefully
+   * - Logs the disconnection with context
+   * - Notifies other sessions of the same agent (if authenticated)
+   * - Cleans up symbol subscriptions tracking
+   */
+  private handleDisconnect(socket: AuthenticatedSocket, reason: string): void {
+    const disconnectTime = new Date().toISOString();
+    const sessionDuration = socket.authenticatedAt
+      ? Date.now() - socket.authenticatedAt.getTime()
+      : null;
+
+    const subscribedSymbols = socket.subscribedSymbols
+      ? Array.from(socket.subscribedSymbols)
+      : [];
+
+    console.log(
+      `[Socket.io] Client disconnected: ${socket.id}, reason: ${reason}` +
+        (socket.agentId ? `, agent: ${socket.agentId}` : '') +
+        (sessionDuration !== null
+          ? `, session duration: ${Math.round(sessionDuration / 1000)}s`
+          : '') +
+        (subscribedSymbols.length > 0
+          ? `, subscribed symbols: ${subscribedSymbols.join(', ')}`
+          : '')
+    );
+
+    // If the client was authenticated, notify other sessions and check for cleanup
+    if (socket.agentId) {
+      const agentRoom = `agent:${socket.agentId}`;
+      const remainingClients = this.io.sockets.adapter.rooms.get(agentRoom);
+      const hasOtherSessions = remainingClients && remainingClients.size > 0;
+
+      // Emit DISCONNECTED event to other sessions of the same agent
+      if (hasOtherSessions) {
+        this.io.to(agentRoom).emit('AGENT_SESSION_DISCONNECTED', {
+          type: 'AGENT_SESSION_DISCONNECTED',
+          payload: {
+            socketId: socket.id,
+            reason,
+            remainingSessions: remainingClients.size,
+          },
+          timestamp: disconnectTime,
+        });
+      }
+
+      // Log if this was the last session for the agent
+      if (!hasOtherSessions) {
+        console.log(
+          `[Socket.io] Agent ${socket.agentId} has no remaining connected sessions`
+        );
+      }
+    }
+
+    // Clean up subscribedSymbols tracking
+    if (socket.subscribedSymbols) {
+      socket.subscribedSymbols.clear();
+    }
   }
 
   /**
