@@ -269,6 +269,26 @@ export async function getHolding(agentId: string, symbol: string) {
 }
 
 /**
+ * Get all holdings for an agent
+ */
+export async function getAgentHoldings(agentId: string) {
+  return db.select()
+    .from(holdings)
+    .where(eq(holdings.agentId, agentId));
+}
+
+/**
+ * Delete a holding when position is closed (quantity = 0)
+ */
+export async function deleteHolding(agentId: string, symbol: string): Promise<void> {
+  await db.delete(holdings)
+    .where(and(
+      eq(holdings.agentId, agentId),
+      eq(holdings.symbol, symbol)
+    ));
+}
+
+/**
  * Get all distinct symbols with pending orders
  */
 export async function getSymbolsWithPendingOrders(): Promise<string[]> {

@@ -384,10 +384,18 @@ export class TickEngine extends EventEmitter {
       await dbService.updateAgentCash(agentId, -tradeValue);
     } else {
       // Selling: decrease shares, increase cash
-      // Keep the average cost the same when selling
-      const currentCost = holding ? parseFloat(holding.averageCost) : price;
+      const currentQuantity = holding?.quantity || 0;
+      const newQuantity = currentQuantity - quantity;
 
-      await dbService.updateHolding(agentId, symbol, -quantity, currentCost);
+      if (newQuantity === 0 && holding) {
+        // Position fully closed, delete the holding record
+        await dbService.deleteHolding(agentId, symbol);
+      } else {
+        // Keep the average cost the same when selling
+        const currentCost = holding ? parseFloat(holding.averageCost) : price;
+        await dbService.updateHolding(agentId, symbol, -quantity, currentCost);
+      }
+
       await dbService.updateAgentCash(agentId, tradeValue);
     }
   }

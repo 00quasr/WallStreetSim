@@ -75,6 +75,8 @@ vi.mock('../services/db', () => ({
   updateHolding: vi.fn().mockResolvedValue(undefined),
   updateAgentCash: vi.fn().mockResolvedValue(undefined),
   getHolding: vi.fn().mockResolvedValue(null),
+  getAgentHoldings: vi.fn().mockResolvedValue([]),
+  deleteHolding: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../services/redis', () => ({

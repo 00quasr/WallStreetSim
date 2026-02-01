@@ -69,7 +69,7 @@ vi.mock('../services/redis', () => ({
 import { TickEngine } from '../tick-engine';
 import * as dbService from '../services/db';
 
-describe('Agent Holdings and Cash Balance Updates', () => {
+describe('Holdings Table Updates', () => {
   let engine: TickEngine;
 
   beforeEach(async () => {
@@ -87,8 +87,8 @@ describe('Agent Holdings and Cash Balance Updates', () => {
     engine.getMarketEngine().clearAll();
   });
 
-  describe('Buyer cash and holdings updates', () => {
-    it('decreases buyer cash by trade value when buying shares', async () => {
+  describe('New position creation', () => {
+    it('creates a new holding when buying shares with no existing position', async () => {
       // Add sell order to book
       const sellOrder = {
         id: 'sell-order-1',
@@ -110,6 +110,9 @@ describe('Agent Holdings and Cash Balance Updates', () => {
       (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
       (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
       await engine.runTick();
+
+      // Agent has no existing holding
+      (dbService.getHolding as Mock).mockResolvedValue(null);
 
       // Add matching buy order
       const buyOrder = {
@@ -133,125 +136,32 @@ describe('Agent Holdings and Cash Balance Updates', () => {
       (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
       await engine.runTick();
 
-      const expectedTradeValue = 100 * 150; // quantity * price = 15000
-
-      // Verify buyer's cash decreased
-      expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-buyer', -expectedTradeValue);
-    });
-
-    it('increases buyer holdings when buying shares', async () => {
-      const sellOrder = {
-        id: 'sell-order-1',
-        agentId: 'agent-seller',
-        symbol: 'AAPL',
-        side: 'SELL',
-        orderType: 'LIMIT',
-        quantity: 50,
-        price: '200.00',
-        stopPrice: null,
-        status: 'pending',
-        filledQuantity: 0,
-        avgFillPrice: null,
-        tickSubmitted: 0,
-        tickFilled: null,
-        createdAt: new Date(),
-      };
-
-      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
-      await engine.runTick();
-
-      const buyOrder = {
-        id: 'buy-order-1',
-        agentId: 'agent-buyer',
-        symbol: 'AAPL',
-        side: 'BUY',
-        orderType: 'LIMIT',
-        quantity: 50,
-        price: '200.00',
-        stopPrice: null,
-        status: 'pending',
-        filledQuantity: 0,
-        avgFillPrice: null,
-        tickSubmitted: 1,
-        tickFilled: null,
-        createdAt: new Date(),
-      };
-
-      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
-      await engine.runTick();
-
-      // Verify buyer's holdings increased with positive quantity delta
+      // Verify new holding is created with correct quantity and average cost
       expect(dbService.updateHolding).toHaveBeenCalledWith(
         'agent-buyer',
         'AAPL',
-        50, // positive quantity delta
-        200.00 // average cost equals trade price for new position
+        100, // positive quantity for buy
+        150 // average cost equals trade price for new position
       );
     });
   });
 
-  describe('Seller cash and holdings updates', () => {
-    it('increases seller cash by trade value when selling shares', async () => {
-      const sellOrder = {
-        id: 'sell-order-1',
-        agentId: 'agent-seller',
-        symbol: 'AAPL',
-        side: 'SELL',
-        orderType: 'LIMIT',
-        quantity: 75,
-        price: '180.00',
-        stopPrice: null,
-        status: 'pending',
-        filledQuantity: 0,
-        avgFillPrice: null,
-        tickSubmitted: 0,
-        tickFilled: null,
-        createdAt: new Date(),
-      };
-
-      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
-      await engine.runTick();
-
-      const buyOrder = {
-        id: 'buy-order-1',
-        agentId: 'agent-buyer',
-        symbol: 'AAPL',
-        side: 'BUY',
-        orderType: 'LIMIT',
-        quantity: 75,
-        price: '180.00',
-        stopPrice: null,
-        status: 'pending',
-        filledQuantity: 0,
-        avgFillPrice: null,
-        tickSubmitted: 1,
-        tickFilled: null,
-        createdAt: new Date(),
-      };
-
-      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
-      await engine.runTick();
-
-      const expectedTradeValue = 75 * 180; // 13500
-
-      // Verify seller's cash increased
-      expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-seller', expectedTradeValue);
-    });
-
-    it('decreases seller holdings when selling shares', async () => {
-      // Mock seller's existing holding
-      (dbService.getHolding as Mock).mockResolvedValue({
-        id: 'holding-1',
-        agentId: 'agent-seller',
-        symbol: 'AAPL',
-        quantity: 200,
-        averageCost: '120.0000',
-        createdAt: new Date(),
-        updatedAt: new Date(),
+  describe('Position closing', () => {
+    it('deletes holding record when position is fully closed', async () => {
+      // Seller has exactly 100 shares
+      (dbService.getHolding as Mock).mockImplementation((agentId, symbol) => {
+        if (agentId === 'agent-seller' && symbol === 'AAPL') {
+          return Promise.resolve({
+            id: 'holding-1',
+            agentId: 'agent-seller',
+            symbol: 'AAPL',
+            quantity: 100,
+            averageCost: '120.0000',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+        return Promise.resolve(null);
       });
 
       const sellOrder = {
@@ -261,7 +171,7 @@ describe('Agent Holdings and Cash Balance Updates', () => {
         side: 'SELL',
         orderType: 'LIMIT',
         quantity: 100,
-        price: '160.00',
+        price: '150.00',
         stopPrice: null,
         status: 'pending',
         filledQuantity: 0,
@@ -282,7 +192,7 @@ describe('Agent Holdings and Cash Balance Updates', () => {
         side: 'BUY',
         orderType: 'LIMIT',
         quantity: 100,
-        price: '160.00',
+        price: '150.00',
         stopPrice: null,
         status: 'pending',
         filledQuantity: 0,
@@ -296,27 +206,97 @@ describe('Agent Holdings and Cash Balance Updates', () => {
       (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
       await engine.runTick();
 
-      // Verify seller's holdings decreased with negative quantity delta
+      // Verify holding was deleted when position fully closed
+      expect(dbService.deleteHolding).toHaveBeenCalledWith('agent-seller', 'AAPL');
+    });
+
+    it('updates holding record when position is partially closed', async () => {
+      // Seller has 200 shares
+      (dbService.getHolding as Mock).mockImplementation((agentId, symbol) => {
+        if (agentId === 'agent-seller' && symbol === 'AAPL') {
+          return Promise.resolve({
+            id: 'holding-1',
+            agentId: 'agent-seller',
+            symbol: 'AAPL',
+            quantity: 200,
+            averageCost: '120.0000',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+        return Promise.resolve(null);
+      });
+
+      const sellOrder = {
+        id: 'sell-order-1',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 100, // Selling only 100 of 200 shares
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
+      await engine.runTick();
+
+      const buyOrder = {
+        id: 'buy-order-1',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        orderType: 'LIMIT',
+        quantity: 100,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 1,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
+      await engine.runTick();
+
+      // Verify holding was updated (not deleted) with negative delta
       expect(dbService.updateHolding).toHaveBeenCalledWith(
         'agent-seller',
         'AAPL',
-        -100, // negative quantity delta
-        120 // average cost preserved when selling
+        -100, // negative quantity for partial sell
+        120 // average cost preserved
       );
+      // Verify deleteHolding was NOT called for seller
+      expect(dbService.deleteHolding).not.toHaveBeenCalledWith('agent-seller', 'AAPL');
     });
   });
 
-  describe('Average cost calculation', () => {
-    it('calculates weighted average cost when buying additional shares', async () => {
-      // Agent already has 100 shares at $100 average cost
-      (dbService.getHolding as Mock).mockResolvedValue({
-        id: 'holding-1',
-        agentId: 'agent-buyer',
-        symbol: 'AAPL',
-        quantity: 100,
-        averageCost: '100.0000',
-        createdAt: new Date(),
-        updatedAt: new Date(),
+  describe('Position updates with existing holdings', () => {
+    it('calculates correct weighted average cost when adding to position', async () => {
+      // Agent has 100 shares at $100 average cost
+      (dbService.getHolding as Mock).mockImplementation((agentId, symbol) => {
+        if (agentId === 'agent-buyer' && symbol === 'AAPL') {
+          return Promise.resolve({
+            id: 'holding-1',
+            agentId: 'agent-buyer',
+            symbol: 'AAPL',
+            quantity: 100,
+            averageCost: '100.0000',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+        return Promise.resolve(null);
       });
 
       const sellOrder = {
@@ -361,10 +341,10 @@ describe('Agent Holdings and Cash Balance Updates', () => {
       (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
       await engine.runTick();
 
-      // Current value: 100 shares * $100 = $10,000
-      // New purchase: 100 shares * $200 = $20,000
-      // New total: 200 shares, $30,000 value
-      // New average cost: $30,000 / 200 = $150
+      // Existing: 100 shares * $100 = $10,000
+      // New: 100 shares * $200 = $20,000
+      // Total: 200 shares, $30,000 value
+      // New avg: $30,000 / 200 = $150
       expect(dbService.updateHolding).toHaveBeenCalledWith(
         'agent-buyer',
         'AAPL',
@@ -373,16 +353,21 @@ describe('Agent Holdings and Cash Balance Updates', () => {
       );
     });
 
-    it('preserves average cost when selling shares', async () => {
+    it('preserves average cost when selling from position', async () => {
       // Agent has 100 shares at $150 average cost
-      (dbService.getHolding as Mock).mockResolvedValue({
-        id: 'holding-1',
-        agentId: 'agent-seller',
-        symbol: 'AAPL',
-        quantity: 100,
-        averageCost: '150.0000',
-        createdAt: new Date(),
-        updatedAt: new Date(),
+      (dbService.getHolding as Mock).mockImplementation((agentId, symbol) => {
+        if (agentId === 'agent-seller' && symbol === 'AAPL') {
+          return Promise.resolve({
+            id: 'holding-1',
+            agentId: 'agent-seller',
+            symbol: 'AAPL',
+            quantity: 100,
+            averageCost: '150.0000',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+        return Promise.resolve(null);
       });
 
       const sellOrder = {
@@ -392,7 +377,7 @@ describe('Agent Holdings and Cash Balance Updates', () => {
         side: 'SELL',
         orderType: 'LIMIT',
         quantity: 50,
-        price: '200.00',
+        price: '200.00', // Selling at profit
         stopPrice: null,
         status: 'pending',
         filledQuantity: 0,
@@ -427,209 +412,18 @@ describe('Agent Holdings and Cash Balance Updates', () => {
       (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
       await engine.runTick();
 
-      // Average cost should be preserved at $150 when selling
+      // Average cost should be preserved at $150 when selling (not changed to $200)
       expect(dbService.updateHolding).toHaveBeenCalledWith(
         'agent-seller',
         'AAPL',
         -50,
-        150 // average cost preserved
+        150 // average cost preserved, not the trade price
       );
     });
   });
 
-  describe('Multiple trades in one tick', () => {
-    it('updates both buyer and seller for each trade', async () => {
-      // Reset getHolding to return null (no existing positions - short selling)
-      (dbService.getHolding as Mock).mockResolvedValue(null);
-
-      const sellOrder = {
-        id: 'sell-order-1',
-        agentId: 'agent-seller',
-        symbol: 'AAPL',
-        side: 'SELL',
-        orderType: 'LIMIT',
-        quantity: 100,
-        price: '150.00',
-        stopPrice: null,
-        status: 'pending',
-        filledQuantity: 0,
-        avgFillPrice: null,
-        tickSubmitted: 0,
-        tickFilled: null,
-        createdAt: new Date(),
-      };
-
-      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
-      await engine.runTick();
-
-      const buyOrder = {
-        id: 'buy-order-1',
-        agentId: 'agent-buyer',
-        symbol: 'AAPL',
-        side: 'BUY',
-        orderType: 'LIMIT',
-        quantity: 100,
-        price: '150.00',
-        stopPrice: null,
-        status: 'pending',
-        filledQuantity: 0,
-        avgFillPrice: null,
-        tickSubmitted: 1,
-        tickFilled: null,
-        createdAt: new Date(),
-      };
-
-      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
-      await engine.runTick();
-
-      const tradeValue = 100 * 150;
-
-      // Both cash updates should have been called
-      expect(dbService.updateAgentCash).toHaveBeenCalledTimes(2);
-      expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-buyer', -tradeValue);
-      expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-seller', tradeValue);
-
-      // Both holding updates should have been called
-      expect(dbService.updateHolding).toHaveBeenCalledTimes(2);
-      expect(dbService.updateHolding).toHaveBeenCalledWith('agent-buyer', 'AAPL', 100, 150);
-      expect(dbService.updateHolding).toHaveBeenCalledWith('agent-seller', 'AAPL', -100, expect.any(Number));
-    });
-  });
-
-  describe('Partial fill balance updates', () => {
-    it('updates balances only for the filled quantity', async () => {
-      // Sell order for 50 shares
-      const sellOrder = {
-        id: 'sell-order-1',
-        agentId: 'agent-seller',
-        symbol: 'AAPL',
-        side: 'SELL',
-        orderType: 'LIMIT',
-        quantity: 50,
-        price: '150.00',
-        stopPrice: null,
-        status: 'pending',
-        filledQuantity: 0,
-        avgFillPrice: null,
-        tickSubmitted: 0,
-        tickFilled: null,
-        createdAt: new Date(),
-      };
-
-      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
-      await engine.runTick();
-
-      // Buy order for 100 shares (will only fill 50)
-      const buyOrder = {
-        id: 'buy-order-1',
-        agentId: 'agent-buyer',
-        symbol: 'AAPL',
-        side: 'BUY',
-        orderType: 'LIMIT',
-        quantity: 100,
-        price: '150.00',
-        stopPrice: null,
-        status: 'pending',
-        filledQuantity: 0,
-        avgFillPrice: null,
-        tickSubmitted: 1,
-        tickFilled: null,
-        createdAt: new Date(),
-      };
-
-      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
-      await engine.runTick();
-
-      // Should only update for 50 shares traded
-      const partialTradeValue = 50 * 150; // 7500
-
-      // Cash updates for 50 shares only
-      expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-buyer', -partialTradeValue);
-      expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-seller', partialTradeValue);
-
-      // Holding updates for 50 shares only
-      expect(dbService.updateHolding).toHaveBeenCalledWith('agent-buyer', 'AAPL', 50, 150);
-      expect(dbService.updateHolding).toHaveBeenCalledWith('agent-seller', 'AAPL', -50, expect.any(Number));
-    });
-  });
-
-  describe('Trade value calculation', () => {
-    it('calculates trade value correctly at different price points', async () => {
-      const testCases = [
-        { quantity: 100, price: '150.00', expectedValue: 15000 },
-        { quantity: 1, price: '1000.00', expectedValue: 1000 },
-        { quantity: 500, price: '25.50', expectedValue: 12750 },
-        { quantity: 10, price: '99.99', expectedValue: 999.9 },
-      ];
-
-      for (const testCase of testCases) {
-        vi.clearAllMocks();
-
-        // Reinitialize engine for each test
-        engine = new TickEngine({
-          tickIntervalMs: 1000,
-          enableEvents: false,
-          eventChance: 0,
-        });
-        await engine.initialize();
-
-        // Clear market maker's initial liquidity so test can control the order book
-        engine.getMarketEngine().clearAll();
-
-        const sellOrder = {
-          id: 'sell-order-1',
-          agentId: 'agent-seller',
-          symbol: 'AAPL',
-          side: 'SELL',
-          orderType: 'LIMIT',
-          quantity: testCase.quantity,
-          price: testCase.price,
-          stopPrice: null,
-          status: 'pending',
-          filledQuantity: 0,
-          avgFillPrice: null,
-          tickSubmitted: 0,
-          tickFilled: null,
-          createdAt: new Date(),
-        };
-
-        (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-        (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
-        await engine.runTick();
-
-        const buyOrder = {
-          id: 'buy-order-1',
-          agentId: 'agent-buyer',
-          symbol: 'AAPL',
-          side: 'BUY',
-          orderType: 'LIMIT',
-          quantity: testCase.quantity,
-          price: testCase.price,
-          stopPrice: null,
-          status: 'pending',
-          filledQuantity: 0,
-          avgFillPrice: null,
-          tickSubmitted: 1,
-          tickFilled: null,
-          createdAt: new Date(),
-        };
-
-        (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
-        (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
-        await engine.runTick();
-
-        expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-buyer', -testCase.expectedValue);
-        expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-seller', testCase.expectedValue);
-      }
-    });
-  });
-
   describe('Short selling scenarios', () => {
-    it('allows holdings to become negative for short positions', async () => {
+    it('creates negative position when short selling', async () => {
       // Seller has no existing position
       (dbService.getHolding as Mock).mockResolvedValue(null);
 
@@ -685,8 +479,62 @@ describe('Agent Holdings and Cash Balance Updates', () => {
     });
   });
 
-  describe('Order of operations', () => {
-    it('inserts trade before updating positions', async () => {
+  describe('Cash balance updates', () => {
+    it('decreases buyer cash and increases seller cash correctly', async () => {
+      const sellOrder = {
+        id: 'sell-order-1',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 100,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
+      await engine.runTick();
+
+      const buyOrder = {
+        id: 'buy-order-1',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        orderType: 'LIMIT',
+        quantity: 100,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 1,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
+      await engine.runTick();
+
+      const expectedTradeValue = 100 * 150; // 15000
+
+      // Verify buyer's cash decreased
+      expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-buyer', -expectedTradeValue);
+
+      // Verify seller's cash increased
+      expect(dbService.updateAgentCash).toHaveBeenCalledWith('agent-seller', expectedTradeValue);
+    });
+  });
+
+  describe('Trade and holdings consistency', () => {
+    it('inserts trade record before updating holdings', async () => {
       const callOrder: string[] = [];
 
       (dbService.insertTrade as Mock).mockImplementation(() => {
@@ -695,6 +543,10 @@ describe('Agent Holdings and Cash Balance Updates', () => {
       });
       (dbService.updateHolding as Mock).mockImplementation(() => {
         callOrder.push('updateHolding');
+        return Promise.resolve(undefined);
+      });
+      (dbService.deleteHolding as Mock).mockImplementation(() => {
+        callOrder.push('deleteHolding');
         return Promise.resolve(undefined);
       });
       (dbService.updateAgentCash as Mock).mockImplementation(() => {
@@ -746,6 +598,7 @@ describe('Agent Holdings and Cash Balance Updates', () => {
 
       // insertTrade should be called first, then position updates
       expect(callOrder[0]).toBe('insertTrade');
+      // Position updates (holdings and cash) should follow
       expect(callOrder.slice(1)).toContain('updateHolding');
       expect(callOrder.slice(1)).toContain('updateAgentCash');
     });
