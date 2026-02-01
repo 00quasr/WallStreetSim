@@ -93,6 +93,10 @@ vi.mock('../services/redis', () => ({
   },
 }));
 
+vi.mock('../services/webhook', () => ({
+  dispatchWebhooks: vi.fn().mockResolvedValue([]),
+}));
+
 import { TickEngine } from '../tick-engine';
 import * as redisService from '../services/redis';
 

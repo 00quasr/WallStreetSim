@@ -12,6 +12,7 @@ import { MarketMaker } from './market-maker';
 import { EventGenerator } from './event-generator';
 import * as dbService from './services/db';
 import * as redisService from './services/redis';
+import * as webhookService from './services/webhook';
 
 interface TickEngineConfig {
   tickIntervalMs: number;
@@ -292,6 +293,19 @@ export class TickEngine extends EventEmitter {
         };
         await redisService.publish(redisService.CHANNELS.SYMBOL_UPDATES(trade.symbol), symbolTradeMessage);
       }
+    }
+
+    // Dispatch webhooks to agents with callback URLs
+    const worldState = await dbService.getWorldState();
+    if (worldState) {
+      await webhookService.dispatchWebhooks(
+        this.currentTick,
+        worldState,
+        priceUpdates,
+        trades,
+        events,
+        tickUpdate.news
+      );
     }
 
     // Emit tick event
