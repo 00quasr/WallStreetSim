@@ -234,6 +234,7 @@ export interface TickWebhook {
   tick: number;
   timestamp: string;
   portfolio: AgentPortfolio;
+  orders: Order[];
   market: {
     indices: { name: string; value: number; change: number }[];
     watchlist: StockQuote[];

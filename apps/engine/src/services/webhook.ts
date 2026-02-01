@@ -1,6 +1,6 @@
-import { db, agents, holdings } from '@wallstreetsim/db';
-import { eq, and, isNotNull } from 'drizzle-orm';
-import type { TickWebhook, AgentAction } from '@wallstreetsim/types';
+import { db, agents, holdings, orders } from '@wallstreetsim/db';
+import { eq, and, isNotNull, inArray } from 'drizzle-orm';
+import type { TickWebhook, AgentAction, Order } from '@wallstreetsim/types';
 import type { PriceUpdate, Trade, MarketEvent, NewsArticle, WorldState } from '@wallstreetsim/types';
 import { signWebhookPayload } from '@wallstreetsim/utils';
 import * as dbService from './db';
@@ -99,6 +99,35 @@ async function getAgentPortfolio(agentId: string, cash: number, marginUsed: numb
 }
 
 /**
+ * Get agent's active orders (pending, open, partial)
+ */
+async function getAgentOrders(agentId: string): Promise<Order[]> {
+  const orderRows = await db.select()
+    .from(orders)
+    .where(and(
+      eq(orders.agentId, agentId),
+      inArray(orders.status, ['pending', 'open', 'partial'])
+    ));
+
+  return orderRows.map(o => ({
+    id: o.id,
+    agentId: o.agentId,
+    symbol: o.symbol,
+    side: o.side as 'BUY' | 'SELL',
+    type: o.orderType as 'MARKET' | 'LIMIT' | 'STOP',
+    quantity: o.quantity,
+    price: o.price ? parseFloat(o.price) : undefined,
+    stopPrice: o.stopPrice ? parseFloat(o.stopPrice) : undefined,
+    status: o.status as Order['status'],
+    filledQuantity: o.filledQuantity,
+    avgFillPrice: o.avgFillPrice ? parseFloat(o.avgFillPrice) : undefined,
+    tickSubmitted: o.tickSubmitted,
+    tickFilled: o.tickFilled ?? undefined,
+    createdAt: o.createdAt,
+  }));
+}
+
+/**
  * Build webhook payload for an agent
  */
 export async function buildWebhookPayload(
@@ -115,7 +144,11 @@ export async function buildWebhookPayload(
   const marginUsed = parseFloat(agent.marginUsed);
   const marginLimit = parseFloat(agent.marginLimit);
 
-  const portfolio = await getAgentPortfolio(agent.id, cash, marginUsed, marginLimit, priceMap);
+  // Fetch portfolio and orders in parallel
+  const [portfolio, agentOrders] = await Promise.all([
+    getAgentPortfolio(agent.id, cash, marginUsed, marginLimit, priceMap),
+    getAgentOrders(agent.id),
+  ]);
 
   // Get trades relevant to this agent
   const agentTrades = trades.filter(t => t.buyerId === agent.id || t.sellerId === agent.id);
@@ -138,6 +171,7 @@ export async function buildWebhookPayload(
     tick,
     timestamp: new Date().toISOString(),
     portfolio,
+    orders: agentOrders,
     market: {
       indices: [], // Could add market indices here
       watchlist,

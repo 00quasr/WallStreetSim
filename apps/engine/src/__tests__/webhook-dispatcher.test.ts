@@ -188,19 +188,28 @@ describe('Webhook Dispatcher', () => {
     const mockNews: NewsArticle[] = [];
 
     beforeEach(() => {
-      // Mock holdings query
-      (db.select as Mock).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([
-            {
-              agentId: 'agent-1',
-              symbol: 'AAPL',
-              quantity: 100,
-              averageCost: '145.00',
-            },
-          ]),
-        }),
-      });
+      // Mock holdings and orders queries (called in parallel via Promise.all)
+      let callCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            // First call is holdings, second is orders
+            if (callCount % 2 === 1) {
+              return Promise.resolve([
+                {
+                  agentId: 'agent-1',
+                  symbol: 'AAPL',
+                  quantity: 100,
+                  averageCost: '145.00',
+                },
+              ]);
+            }
+            // Orders query returns empty array by default
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
     });
 
     it('builds payload with correct tick number', async () => {
@@ -341,6 +350,164 @@ describe('Webhook Dispatcher', () => {
       expect(payload.world.currentTick).toBe(100);
       expect(payload.world.marketOpen).toBe(true);
       expect(payload.world.regime).toBe('normal');
+    });
+
+    it('includes orders array (empty when no active orders)', async () => {
+      const priceMap = new Map([['AAPL', 150.50]]);
+
+      const payload = await buildWebhookPayload(
+        mockAgent,
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        mockTrades,
+        mockEvents,
+        mockNews,
+        priceMap
+      );
+
+      expect(payload.orders).toBeDefined();
+      expect(Array.isArray(payload.orders)).toBe(true);
+      expect(payload.orders).toHaveLength(0);
+    });
+
+    it('includes agent active orders', async () => {
+      const priceMap = new Map([['AAPL', 150.50]]);
+
+      const mockOrders = [
+        {
+          id: 'order-1',
+          agentId: 'agent-1',
+          symbol: 'AAPL',
+          side: 'BUY',
+          orderType: 'LIMIT',
+          quantity: 50,
+          price: '148.00',
+          stopPrice: null,
+          status: 'open',
+          filledQuantity: 0,
+          avgFillPrice: null,
+          tickSubmitted: 99,
+          tickFilled: null,
+          createdAt: new Date(),
+        },
+        {
+          id: 'order-2',
+          agentId: 'agent-1',
+          symbol: 'GOOG',
+          side: 'SELL',
+          orderType: 'STOP',
+          quantity: 25,
+          price: null,
+          stopPrice: '2750.00',
+          status: 'pending',
+          filledQuantity: 0,
+          avgFillPrice: null,
+          tickSubmitted: 98,
+          tickFilled: null,
+          createdAt: new Date(),
+        },
+      ];
+
+      let callCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            // First call is holdings, second is orders
+            if (callCount % 2 === 1) {
+              return Promise.resolve([
+                {
+                  agentId: 'agent-1',
+                  symbol: 'AAPL',
+                  quantity: 100,
+                  averageCost: '145.00',
+                },
+              ]);
+            }
+            return Promise.resolve(mockOrders);
+          }),
+        })),
+      }));
+
+      const payload = await buildWebhookPayload(
+        mockAgent,
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        mockTrades,
+        mockEvents,
+        mockNews,
+        priceMap
+      );
+
+      expect(payload.orders).toHaveLength(2);
+      expect(payload.orders[0].id).toBe('order-1');
+      expect(payload.orders[0].symbol).toBe('AAPL');
+      expect(payload.orders[0].side).toBe('BUY');
+      expect(payload.orders[0].type).toBe('LIMIT');
+      expect(payload.orders[0].quantity).toBe(50);
+      expect(payload.orders[0].price).toBe(148);
+      expect(payload.orders[0].status).toBe('open');
+
+      expect(payload.orders[1].id).toBe('order-2');
+      expect(payload.orders[1].symbol).toBe('GOOG');
+      expect(payload.orders[1].side).toBe('SELL');
+      expect(payload.orders[1].type).toBe('STOP');
+      expect(payload.orders[1].stopPrice).toBe(2750);
+      expect(payload.orders[1].status).toBe('pending');
+    });
+
+    it('includes partially filled orders', async () => {
+      const priceMap = new Map([['AAPL', 150.50]]);
+
+      const mockOrders = [
+        {
+          id: 'order-1',
+          agentId: 'agent-1',
+          symbol: 'AAPL',
+          side: 'BUY',
+          orderType: 'LIMIT',
+          quantity: 100,
+          price: '150.00',
+          stopPrice: null,
+          status: 'partial',
+          filledQuantity: 60,
+          avgFillPrice: '149.50',
+          tickSubmitted: 95,
+          tickFilled: null,
+          createdAt: new Date(),
+        },
+      ];
+
+      let callCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount % 2 === 1) {
+              return Promise.resolve([]);
+            }
+            return Promise.resolve(mockOrders);
+          }),
+        })),
+      }));
+
+      const payload = await buildWebhookPayload(
+        mockAgent,
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        mockTrades,
+        mockEvents,
+        mockNews,
+        priceMap
+      );
+
+      expect(payload.orders).toHaveLength(1);
+      expect(payload.orders[0].status).toBe('partial');
+      expect(payload.orders[0].filledQuantity).toBe(60);
+      expect(payload.orders[0].avgFillPrice).toBe(149.5);
     });
   });
 
