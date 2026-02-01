@@ -52,6 +52,8 @@ export const AgentActionTypeSchema = z.enum([
   'CANCEL_ORDER',
   'RUMOR',
   'ALLY',
+  'ALLY_ACCEPT',
+  'ALLY_REJECT',
   'MESSAGE',
   'BRIBE',
   'WHISTLEBLOW',
@@ -83,6 +85,17 @@ export const AllyActionSchema = z.object({
   proposal: z.string().min(10).max(500),
 });
 
+export const AllyAcceptActionSchema = z.object({
+  type: z.literal('ALLY_ACCEPT'),
+  allianceId: z.string().uuid(),
+});
+
+export const AllyRejectActionSchema = z.object({
+  type: z.literal('ALLY_REJECT'),
+  allianceId: z.string().uuid(),
+  reason: z.string().min(1).max(200).optional(),
+});
+
 export const MessageActionSchema = z.object({
   type: z.literal('MESSAGE'),
   targetAgent: z.string().uuid(),
@@ -111,6 +124,8 @@ export const AgentActionSchema = z.discriminatedUnion('type', [
   CancelOrderActionSchema,
   RumorActionSchema,
   AllyActionSchema,
+  AllyAcceptActionSchema,
+  AllyRejectActionSchema,
   MessageActionSchema,
   BribeActionSchema,
   WhistleblowActionSchema,
