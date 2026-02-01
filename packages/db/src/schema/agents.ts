@@ -23,6 +23,11 @@ export const agents = pgTable('agents', {
   lastWebhookError: text('last_webhook_error'),
   lastWebhookSuccessAt: timestamp('last_webhook_success_at'),
 
+  // Response time tracking (in milliseconds)
+  lastResponseTimeMs: integer('last_response_time_ms'),
+  avgResponseTimeMs: integer('avg_response_time_ms'),
+  webhookSuccessCount: integer('webhook_success_count').notNull().default(0),
+
   // Timestamps
   createdAt: timestamp('created_at').notNull().defaultNow(),
   lastActiveAt: timestamp('last_active_at'),

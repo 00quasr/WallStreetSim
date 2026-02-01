@@ -989,7 +989,7 @@ describe('Webhook Dispatcher', () => {
       expect(results[0].responseTimeMs).toBeGreaterThanOrEqual(0);
     });
 
-    it('records webhook success for successful webhook', async () => {
+    it('records webhook success for successful webhook with response time', async () => {
       const mockAgents = [
         {
           id: 'agent-1',
@@ -1023,7 +1023,7 @@ describe('Webhook Dispatcher', () => {
 
       await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
 
-      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1');
+      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1', expect.any(Number));
       expect(dbService.recordWebhookFailure).not.toHaveBeenCalled();
     });
 
@@ -1151,7 +1151,7 @@ describe('Webhook Dispatcher', () => {
 
       await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
 
-      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1');
+      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1', expect.any(Number));
       expect(dbService.recordWebhookFailure).toHaveBeenCalledWith('agent-2', 'HTTP 400: Bad Request');
     });
   });
@@ -1473,7 +1473,7 @@ describe('Webhook Dispatcher', () => {
         { maxRetries: 3 }
       );
 
-      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1');
+      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1', expect.any(Number));
       expect(dbService.recordWebhookFailure).not.toHaveBeenCalled();
     });
 

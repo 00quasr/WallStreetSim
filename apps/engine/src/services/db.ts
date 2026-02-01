@@ -320,14 +320,32 @@ export async function getAgent(agentId: string) {
 }
 
 /**
- * Record a webhook success for an agent (resets failure count)
+ * Record a webhook success for an agent (resets failure count, updates response time)
  */
-export async function recordWebhookSuccess(agentId: string): Promise<void> {
+export async function recordWebhookSuccess(agentId: string, responseTimeMs: number): Promise<void> {
+  // First get current avg and count to calculate new running average
+  const [agent] = await db.select({
+    avgResponseTimeMs: agents.avgResponseTimeMs,
+    webhookSuccessCount: agents.webhookSuccessCount,
+  })
+    .from(agents)
+    .where(eq(agents.id, agentId));
+
+  const currentAvg = agent?.avgResponseTimeMs ?? 0;
+  const currentCount = agent?.webhookSuccessCount ?? 0;
+  const newCount = currentCount + 1;
+
+  // Calculate new running average: newAvg = ((oldAvg * oldCount) + newValue) / newCount
+  const newAvg = Math.round(((currentAvg * currentCount) + responseTimeMs) / newCount);
+
   await db.update(agents)
     .set({
       webhookFailures: 0,
       lastWebhookError: null,
       lastWebhookSuccessAt: new Date(),
+      lastResponseTimeMs: responseTimeMs,
+      avgResponseTimeMs: newAvg,
+      webhookSuccessCount: newCount,
     })
     .where(eq(agents.id, agentId));
 }
@@ -352,4 +370,32 @@ export async function getAgentWebhookFailures(agentId: string): Promise<number> 
     .from(agents)
     .where(eq(agents.id, agentId));
   return agent?.webhookFailures ?? 0;
+}
+
+/**
+ * Response time stats for an agent
+ */
+export interface AgentResponseTimeStats {
+  lastResponseTimeMs: number | null;
+  avgResponseTimeMs: number | null;
+  webhookSuccessCount: number;
+}
+
+/**
+ * Get response time stats for an agent
+ */
+export async function getAgentResponseTimeStats(agentId: string): Promise<AgentResponseTimeStats> {
+  const [agent] = await db.select({
+    lastResponseTimeMs: agents.lastResponseTimeMs,
+    avgResponseTimeMs: agents.avgResponseTimeMs,
+    webhookSuccessCount: agents.webhookSuccessCount,
+  })
+    .from(agents)
+    .where(eq(agents.id, agentId));
+
+  return {
+    lastResponseTimeMs: agent?.lastResponseTimeMs ?? null,
+    avgResponseTimeMs: agent?.avgResponseTimeMs ?? null,
+    webhookSuccessCount: agent?.webhookSuccessCount ?? 0,
+  };
 }

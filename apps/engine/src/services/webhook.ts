@@ -408,7 +408,7 @@ export async function dispatchWebhooks(
   await Promise.all(
     results.map(async (result) => {
       if (result.success) {
-        await dbService.recordWebhookSuccess(result.agentId);
+        await dbService.recordWebhookSuccess(result.agentId, result.responseTimeMs);
       } else {
         await dbService.recordWebhookFailure(result.agentId, result.error || 'Unknown error');
       }
