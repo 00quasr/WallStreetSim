@@ -116,3 +116,19 @@ export {
   sharpeRatio,
   maxDrawdown,
 } from './math';
+
+// Retry utilities
+export {
+  retryWithBackoff,
+  retry,
+  withRetry,
+  withRetryResult,
+  calculateBackoffDelay,
+  sleep,
+  isRetryableError,
+  isRetryableStatusCode,
+  DEFAULT_RETRY_CONFIG,
+  RETRY_PROFILES,
+} from './retry';
+
+export type { RetryConfig, RetryResult } from './retry';
