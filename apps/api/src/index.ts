@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
 import { app } from './app';
-import { initSocketServer, getSocketServer } from './websocket';
+import { initSocketServer } from './websocket';
 
 const port = parseInt(process.env.API_PORT || '8080', 10);
 
@@ -11,16 +11,20 @@ console.log('║         THE MARKET NEVER SLEEPS                       ║');
 console.log('╚═══════════════════════════════════════════════════════╝');
 console.log('');
 
+// Create HTTP server with Hono app
 const server = serve({
   fetch: app.fetch,
   port,
-}, (info) => {
-  console.log(`API server running on http://localhost:${info.port}`);
-  console.log('');
+});
 
-  // Initialize Socket.io server
-  const socketServer = initSocketServer(server);
-  console.log('Socket.io server initialized');
+// Initialize Socket.io server alongside HTTP server (synchronously)
+// This ensures WebSocket is ready to accept connections as soon as HTTP starts listening
+const socketServer = initSocketServer(server);
+console.log('Socket.io server initialized');
+
+// Log server info once HTTP server is ready
+server.on('listening', () => {
+  console.log(`API server running on http://localhost:${port}`);
   console.log('');
 
   console.log('REST Endpoints:');
@@ -40,7 +44,7 @@ const server = serve({
   console.log('  GET  /world/leaderboard - Get leaderboard');
   console.log('');
   console.log('WebSocket (Socket.io):');
-  console.log('  ws://localhost:' + info.port + ' - Connect via Socket.io client');
+  console.log('  ws://localhost:' + port + ' - Connect via Socket.io client');
   console.log('');
   console.log('WebSocket Events:');
   console.log('  AUTH        - Authenticate with API key');
@@ -50,23 +54,13 @@ const server = serve({
   console.log('');
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down gracefully...');
-  const socketServer = getSocketServer();
-  if (socketServer) {
-    await socketServer.close();
-  }
+// Graceful shutdown handler
+async function shutdown(signal: string): Promise<void> {
+  console.log(`${signal} received, shutting down gracefully...`);
+  await socketServer.close();
   server.close();
   process.exit(0);
-});
+}
 
-process.on('SIGINT', async () => {
-  console.log('SIGINT received, shutting down gracefully...');
-  const socketServer = getSocketServer();
-  if (socketServer) {
-    await socketServer.close();
-  }
-  server.close();
-  process.exit(0);
-});
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
