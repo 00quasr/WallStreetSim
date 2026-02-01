@@ -13,6 +13,7 @@ export const CHANNELS = {
   PRICE_UPDATES: 'channel:prices',
   NEWS_UPDATES: 'channel:news',
   LEADERBOARD_UPDATES: 'channel:leaderboard',
+  TRADES: 'channel:trades',
   AGENT_UPDATES: (agentId: string) => `channel:agent:${agentId}`,
   SYMBOL_UPDATES: (symbol: string) => `channel:market:${symbol}`,
 };
