@@ -1,5 +1,11 @@
-import type { Order, OrderBook, OrderBookLevel, Trade } from '@wallstreetsim/types';
+import type { Order, OrderBook, OrderBookLevel, Trade, AffectedRestingOrder } from '@wallstreetsim/types';
 import { generateUUID, round } from '@wallstreetsim/utils';
+
+export interface SubmitOrderResult {
+  fills: Trade[];
+  remainingQuantity: number;
+  affectedRestingOrders: AffectedRestingOrder[];
+}
 
 export class MarketEngine {
   private orderBooks: Map<string, OrderBook> = new Map();
@@ -30,10 +36,10 @@ export class MarketEngine {
   /**
    * Submit an order and attempt to match
    */
-  submitOrder(order: Order): { fills: Trade[]; remainingQuantity: number } {
+  submitOrder(order: Order): SubmitOrderResult {
     const orderBook = this.orderBooks.get(order.symbol);
     if (!orderBook) {
-      return { fills: [], remainingQuantity: order.quantity };
+      return { fills: [], remainingQuantity: order.quantity, affectedRestingOrders: [] };
     }
 
     if (order.type === 'MARKET') {
@@ -49,8 +55,9 @@ export class MarketEngine {
   private executeMarketOrder(
     order: Order,
     book: OrderBook
-  ): { fills: Trade[]; remainingQuantity: number } {
+  ): SubmitOrderResult {
     const fills: Trade[] = [];
+    const affectedRestingOrders: Map<string, AffectedRestingOrder> = new Map();
     let remainingQty = order.quantity;
     const levels = order.side === 'BUY' ? book.asks : book.bids;
 
@@ -74,10 +81,26 @@ export class MarketEngine {
 
       remainingQty -= fillQty;
       level.quantity -= fillQty;
+      const newFilledQuantity = restingOrder.filledQuantity + fillQty;
       level.orders[0] = {
         ...restingOrder,
-        filledQuantity: restingOrder.filledQuantity + fillQty,
+        filledQuantity: newFilledQuantity,
       };
+
+      // Track affected resting order
+      const existing = affectedRestingOrders.get(restingOrder.id);
+      if (existing) {
+        const totalFillValue = existing.avgFillPrice * existing.filledQuantity + level.price * fillQty;
+        existing.filledQuantity += fillQty;
+        existing.avgFillPrice = totalFillValue / existing.filledQuantity;
+      } else {
+        affectedRestingOrders.set(restingOrder.id, {
+          orderId: restingOrder.id,
+          filledQuantity: newFilledQuantity,
+          totalQuantity: restingOrder.quantity,
+          avgFillPrice: level.price,
+        });
+      }
 
       if (level.quantity <= 0) {
         levels.shift();
@@ -87,7 +110,7 @@ export class MarketEngine {
       book.lastTick = this.currentTick;
     }
 
-    return { fills, remainingQuantity: remainingQty };
+    return { fills, remainingQuantity: remainingQty, affectedRestingOrders: Array.from(affectedRestingOrders.values()) };
   }
 
   /**
@@ -96,8 +119,9 @@ export class MarketEngine {
   private executeLimitOrder(
     order: Order,
     book: OrderBook
-  ): { fills: Trade[]; remainingQuantity: number } {
+  ): SubmitOrderResult {
     const fills: Trade[] = [];
+    const affectedRestingOrders: Map<string, AffectedRestingOrder> = new Map();
     let remainingQty = order.quantity;
     const oppositeLevels = order.side === 'BUY' ? book.asks : book.bids;
 
@@ -130,10 +154,26 @@ export class MarketEngine {
 
       remainingQty -= fillQty;
       level.quantity -= fillQty;
+      const newFilledQuantity = restingOrder.filledQuantity + fillQty;
       level.orders[0] = {
         ...restingOrder,
-        filledQuantity: restingOrder.filledQuantity + fillQty,
+        filledQuantity: newFilledQuantity,
       };
+
+      // Track affected resting order
+      const existing = affectedRestingOrders.get(restingOrder.id);
+      if (existing) {
+        const totalFillValue = existing.avgFillPrice * existing.filledQuantity + level.price * fillQty;
+        existing.filledQuantity += fillQty;
+        existing.avgFillPrice = totalFillValue / existing.filledQuantity;
+      } else {
+        affectedRestingOrders.set(restingOrder.id, {
+          orderId: restingOrder.id,
+          filledQuantity: newFilledQuantity,
+          totalQuantity: restingOrder.quantity,
+          avgFillPrice: level.price,
+        });
+      }
 
       if (level.quantity <= 0) {
         oppositeLevels.shift();
@@ -148,7 +188,7 @@ export class MarketEngine {
       this.addToBook(order, remainingQty, book);
     }
 
-    return { fills, remainingQuantity: remainingQty };
+    return { fills, remainingQuantity: remainingQty, affectedRestingOrders: Array.from(affectedRestingOrders.values()) };
   }
 
   /**

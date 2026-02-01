@@ -264,7 +264,22 @@ export class TickEngine extends EventEmitter {
 
         // For market orders, we use the current market price
         // For limit orders, use the order's specified price
-        const { fills, remainingQuantity } = this.marketEngine.submitOrder(order);
+        const { fills, remainingQuantity, affectedRestingOrders } = this.marketEngine.submitOrder(order);
+
+        // Update status of resting orders that were affected by this fill
+        for (const affectedOrder of affectedRestingOrders) {
+          const restingStatus = affectedOrder.filledQuantity >= affectedOrder.totalQuantity
+            ? 'filled'
+            : 'partial';
+          const tickFilled = restingStatus === 'filled' ? this.currentTick : null;
+          await dbService.updateOrderStatus(
+            affectedOrder.orderId,
+            restingStatus,
+            affectedOrder.filledQuantity,
+            affectedOrder.avgFillPrice,
+            tickFilled
+          );
+        }
 
         // Process fills
         for (const trade of fills) {

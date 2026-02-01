@@ -665,4 +665,225 @@ describe('MarketEngine', () => {
       expect(fills[0].tick).toBe(100);
     });
   });
+
+  describe('affectedRestingOrders tracking', () => {
+    it('returns affected resting order when limit order matches', () => {
+      // Add a resting sell order to the book
+      const sellOrder: Order = {
+        id: 'sell-resting',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        type: 'LIMIT',
+        quantity: 100,
+        price: 150.00,
+        status: 'open',
+        filledQuantity: 0,
+        tickSubmitted: 1,
+        createdAt: new Date(),
+      };
+      engine.submitOrder(sellOrder);
+
+      // Submit a matching buy order
+      const buyOrder: Order = {
+        id: 'buy-incoming',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        type: 'LIMIT',
+        quantity: 100,
+        price: 150.00,
+        status: 'pending',
+        filledQuantity: 0,
+        tickSubmitted: 2,
+        createdAt: new Date(),
+      };
+
+      const { affectedRestingOrders } = engine.submitOrder(buyOrder);
+
+      expect(affectedRestingOrders).toHaveLength(1);
+      expect(affectedRestingOrders[0].orderId).toBe('sell-resting');
+      expect(affectedRestingOrders[0].filledQuantity).toBe(100);
+      expect(affectedRestingOrders[0].totalQuantity).toBe(100);
+      expect(affectedRestingOrders[0].avgFillPrice).toBe(150.00);
+    });
+
+    it('returns affected resting order when market order matches', () => {
+      // Add a resting sell order to the book
+      const sellOrder: Order = {
+        id: 'sell-resting',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        type: 'LIMIT',
+        quantity: 50,
+        price: 150.00,
+        status: 'open',
+        filledQuantity: 0,
+        tickSubmitted: 1,
+        createdAt: new Date(),
+      };
+      engine.submitOrder(sellOrder);
+
+      // Submit a market buy order
+      const buyOrder: Order = {
+        id: 'buy-incoming',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        type: 'MARKET',
+        quantity: 50,
+        status: 'pending',
+        filledQuantity: 0,
+        tickSubmitted: 2,
+        createdAt: new Date(),
+      };
+
+      const { affectedRestingOrders } = engine.submitOrder(buyOrder);
+
+      expect(affectedRestingOrders).toHaveLength(1);
+      expect(affectedRestingOrders[0].orderId).toBe('sell-resting');
+      expect(affectedRestingOrders[0].filledQuantity).toBe(50);
+      expect(affectedRestingOrders[0].totalQuantity).toBe(50);
+    });
+
+    it('returns partial fill info for resting order', () => {
+      // Add a resting sell order for 100 shares
+      const sellOrder: Order = {
+        id: 'sell-resting',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        type: 'LIMIT',
+        quantity: 100,
+        price: 150.00,
+        status: 'open',
+        filledQuantity: 0,
+        tickSubmitted: 1,
+        createdAt: new Date(),
+      };
+      engine.submitOrder(sellOrder);
+
+      // Submit a buy order for only 30 shares
+      const buyOrder: Order = {
+        id: 'buy-incoming',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        type: 'LIMIT',
+        quantity: 30,
+        price: 150.00,
+        status: 'pending',
+        filledQuantity: 0,
+        tickSubmitted: 2,
+        createdAt: new Date(),
+      };
+
+      const { affectedRestingOrders } = engine.submitOrder(buyOrder);
+
+      expect(affectedRestingOrders).toHaveLength(1);
+      expect(affectedRestingOrders[0].orderId).toBe('sell-resting');
+      expect(affectedRestingOrders[0].filledQuantity).toBe(30);
+      expect(affectedRestingOrders[0].totalQuantity).toBe(100);
+    });
+
+    it('returns empty array when no matching occurs', () => {
+      // Submit a limit order that won't match
+      const buyOrder: Order = {
+        id: 'buy-1',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        type: 'LIMIT',
+        quantity: 100,
+        price: 150.00,
+        status: 'pending',
+        filledQuantity: 0,
+        tickSubmitted: 1,
+        createdAt: new Date(),
+      };
+
+      const { affectedRestingOrders } = engine.submitOrder(buyOrder);
+
+      expect(affectedRestingOrders).toHaveLength(0);
+    });
+
+    it('returns empty array for non-existent symbol', () => {
+      const order: Order = {
+        id: 'order-1',
+        agentId: 'agent-1',
+        symbol: 'INVALID',
+        side: 'BUY',
+        type: 'MARKET',
+        quantity: 100,
+        status: 'pending',
+        filledQuantity: 0,
+        tickSubmitted: 1,
+        createdAt: new Date(),
+      };
+
+      const { affectedRestingOrders } = engine.submitOrder(order);
+
+      expect(affectedRestingOrders).toHaveLength(0);
+    });
+
+    it('tracks fills correctly for resting orders', () => {
+      // Add a resting sell order for 100 shares
+      const sellOrder: Order = {
+        id: 'sell-resting',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        type: 'LIMIT',
+        quantity: 100,
+        price: 150.00,
+        status: 'open',
+        filledQuantity: 0,
+        tickSubmitted: 1,
+        createdAt: new Date(),
+      };
+      engine.submitOrder(sellOrder);
+
+      // Submit a buy order for 30 shares (partial fill of resting order)
+      const buyOrder1: Order = {
+        id: 'buy-incoming-1',
+        agentId: 'agent-buyer-1',
+        symbol: 'AAPL',
+        side: 'BUY',
+        type: 'LIMIT',
+        quantity: 30,
+        price: 150.00,
+        status: 'pending',
+        filledQuantity: 0,
+        tickSubmitted: 2,
+        createdAt: new Date(),
+      };
+
+      const result1 = engine.submitOrder(buyOrder1);
+      expect(result1.affectedRestingOrders).toHaveLength(1);
+      expect(result1.affectedRestingOrders[0].filledQuantity).toBe(30);
+      expect(result1.affectedRestingOrders[0].totalQuantity).toBe(100);
+
+      // Submit another buy order for 20 more shares
+      const buyOrder2: Order = {
+        id: 'buy-incoming-2',
+        agentId: 'agent-buyer-2',
+        symbol: 'AAPL',
+        side: 'BUY',
+        type: 'LIMIT',
+        quantity: 20,
+        price: 150.00,
+        status: 'pending',
+        filledQuantity: 0,
+        tickSubmitted: 3,
+        createdAt: new Date(),
+      };
+
+      const result2 = engine.submitOrder(buyOrder2);
+      expect(result2.affectedRestingOrders).toHaveLength(1);
+      // filledQuantity should now be 30 (prior) + 20 (new) = 50
+      expect(result2.affectedRestingOrders[0].filledQuantity).toBe(50);
+      expect(result2.affectedRestingOrders[0].totalQuantity).toBe(100);
+    });
+  });
 });

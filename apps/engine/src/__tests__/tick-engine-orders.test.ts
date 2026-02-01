@@ -876,4 +876,290 @@ describe('TickEngine Order Processing', () => {
       expect(tickUpdate.marketOpen).toBe(false);
     });
   });
+
+  describe('resting order status updates', () => {
+    it('updates resting order status to filled when fully matched', async () => {
+      // First tick: Add a sell order to the book (becomes resting)
+      const sellOrder = {
+        id: 'sell-order-resting',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 100,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
+
+      // First tick: sell order goes to book with 'open' status
+      await engine.runTick();
+
+      // Clear mocks to track second tick calls
+      vi.clearAllMocks();
+
+      // Second tick: Add a matching buy order
+      const buyOrder = {
+        id: 'buy-order-incoming',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        orderType: 'LIMIT',
+        quantity: 100,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 1,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
+
+      await engine.runTick();
+
+      // Verify the resting sell order was updated to 'filled'
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'sell-order-resting',
+        'filled',
+        100,
+        150.00,
+        2 // tick filled
+      );
+
+      // Verify the incoming buy order was also updated to 'filled'
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'buy-order-incoming',
+        'filled',
+        100,
+        150.00,
+        2 // tick filled
+      );
+    });
+
+    it('updates resting order status to partial when partially matched', async () => {
+      // First tick: Add a large sell order to the book
+      const sellOrder = {
+        id: 'sell-order-resting',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 100,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
+
+      await engine.runTick();
+
+      vi.clearAllMocks();
+
+      // Second tick: Add a smaller buy order (partial match)
+      const buyOrder = {
+        id: 'buy-order-incoming',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        orderType: 'LIMIT',
+        quantity: 40,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 1,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
+
+      await engine.runTick();
+
+      // Verify the resting sell order was updated to 'partial'
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'sell-order-resting',
+        'partial',
+        40,
+        150.00,
+        null // not fully filled, so no tickFilled
+      );
+
+      // Verify the incoming buy order was updated to 'filled' (it got all it wanted)
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'buy-order-incoming',
+        'filled',
+        40,
+        150.00,
+        2
+      );
+    });
+
+    it('updates resting order status when market order matches', async () => {
+      // First tick: Add a sell limit order to the book
+      const sellOrder = {
+        id: 'sell-order-resting',
+        agentId: 'agent-seller',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 50,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder]);
+
+      await engine.runTick();
+
+      vi.clearAllMocks();
+
+      // Second tick: Add a market buy order
+      const marketBuyOrder = {
+        id: 'market-buy-incoming',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        orderType: 'MARKET',
+        quantity: 50,
+        price: null,
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 1,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([marketBuyOrder]);
+
+      await engine.runTick();
+
+      // Verify the resting sell order was updated to 'filled'
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'sell-order-resting',
+        'filled',
+        50,
+        150.00,
+        2
+      );
+    });
+
+    it('updates multiple resting orders when one incoming order matches multiple levels', async () => {
+      // Clear the order book to remove market maker liquidity
+      engine.getMarketEngine().clearAll();
+
+      // First tick: Add two sell orders at different prices
+      const sellOrder1 = {
+        id: 'sell-order-1',
+        agentId: 'agent-seller-1',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 30,
+        price: '150.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      const sellOrder2 = {
+        id: 'sell-order-2',
+        agentId: 'agent-seller-2',
+        symbol: 'AAPL',
+        side: 'SELL',
+        orderType: 'LIMIT',
+        quantity: 30,
+        price: '151.00',
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 0,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([sellOrder1, sellOrder2]);
+
+      await engine.runTick();
+
+      vi.clearAllMocks();
+
+      // Second tick: Add a large buy order that matches both
+      const buyOrder = {
+        id: 'buy-order-incoming',
+        agentId: 'agent-buyer',
+        symbol: 'AAPL',
+        side: 'BUY',
+        orderType: 'LIMIT',
+        quantity: 60,
+        price: '151.00', // Will match both sell orders
+        stopPrice: null,
+        status: 'pending',
+        filledQuantity: 0,
+        avgFillPrice: null,
+        tickSubmitted: 1,
+        tickFilled: null,
+        createdAt: new Date(),
+      };
+
+      (dbService.getSymbolsWithPendingOrders as Mock).mockResolvedValueOnce(['AAPL']);
+      (dbService.getPendingOrders as Mock).mockResolvedValueOnce([buyOrder]);
+
+      await engine.runTick();
+
+      // Both resting sell orders should be updated to 'filled'
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'sell-order-1',
+        'filled',
+        30,
+        150.00,
+        2
+      );
+
+      expect(dbService.updateOrderStatus).toHaveBeenCalledWith(
+        'sell-order-2',
+        'filled',
+        30,
+        151.00,
+        2
+      );
+    });
+  });
 });
