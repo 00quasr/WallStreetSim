@@ -318,3 +318,38 @@ export async function getAgent(agentId: string) {
     .where(eq(agents.id, agentId));
   return agent;
 }
+
+/**
+ * Record a webhook success for an agent (resets failure count)
+ */
+export async function recordWebhookSuccess(agentId: string): Promise<void> {
+  await db.update(agents)
+    .set({
+      webhookFailures: 0,
+      lastWebhookError: null,
+      lastWebhookSuccessAt: new Date(),
+    })
+    .where(eq(agents.id, agentId));
+}
+
+/**
+ * Record a webhook failure for an agent (increments failure count)
+ */
+export async function recordWebhookFailure(agentId: string, error: string): Promise<void> {
+  await db.update(agents)
+    .set({
+      webhookFailures: sql`${agents.webhookFailures} + 1`,
+      lastWebhookError: error,
+    })
+    .where(eq(agents.id, agentId));
+}
+
+/**
+ * Get webhook failure count for an agent
+ */
+export async function getAgentWebhookFailures(agentId: string): Promise<number> {
+  const [agent] = await db.select({ webhookFailures: agents.webhookFailures })
+    .from(agents)
+    .where(eq(agents.id, agentId));
+  return agent?.webhookFailures ?? 0;
+}

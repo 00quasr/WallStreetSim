@@ -18,6 +18,11 @@ export const agents = pgTable('agents', {
   status: varchar('status', { length: 20 }).notNull().default('active'),
   reputation: integer('reputation').notNull().default(50),
 
+  // Webhook tracking
+  webhookFailures: integer('webhook_failures').notNull().default(0),
+  lastWebhookError: text('last_webhook_error'),
+  lastWebhookSuccessAt: timestamp('last_webhook_success_at'),
+
   // Timestamps
   createdAt: timestamp('created_at').notNull().defaultNow(),
   lastActiveAt: timestamp('last_active_at'),

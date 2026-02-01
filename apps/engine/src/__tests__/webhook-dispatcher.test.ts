@@ -7,11 +7,21 @@ vi.mock('@wallstreetsim/db', () => ({
     select: vi.fn().mockReturnThis(),
     from: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
+    update: vi.fn().mockReturnThis(),
+    set: vi.fn().mockReturnThis(),
   },
-  agents: {},
+  agents: {
+    webhookFailures: 'webhook_failures',
+  },
   holdings: {},
   orders: {},
   companies: {},
+}));
+
+// Mock the db service module
+vi.mock('../services/db', () => ({
+  recordWebhookSuccess: vi.fn(),
+  recordWebhookFailure: vi.fn(),
 }));
 
 // Mock fetch globally
@@ -23,6 +33,7 @@ import {
   buildWebhookPayload,
   dispatchWebhooks,
 } from '../services/webhook';
+import * as dbService from '../services/db';
 import type { PriceUpdate, Trade, MarketEvent, NewsArticle, WorldState } from '@wallstreetsim/types';
 import { db } from '@wallstreetsim/db';
 
@@ -809,6 +820,172 @@ describe('Webhook Dispatcher', () => {
       expect(results[0].responseTimeMs).toBeDefined();
       expect(typeof results[0].responseTimeMs).toBe('number');
       expect(results[0].responseTimeMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('records webhook success for successful webhook', async () => {
+      const mockAgents = [
+        {
+          id: 'agent-1',
+          name: 'Agent One',
+          callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
+          cash: '10000.00',
+          marginUsed: '0.00',
+          marginLimit: '50000.00',
+        },
+      ];
+
+      let callCount = 0;
+      (db.select as Mock).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              return Promise.resolve(mockAgents);
+            }
+            return Promise.resolve([]);
+          }),
+        }),
+      });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      });
+
+      await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
+
+      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1');
+      expect(dbService.recordWebhookFailure).not.toHaveBeenCalled();
+    });
+
+    it('records webhook failure for failed webhook', async () => {
+      const mockAgents = [
+        {
+          id: 'agent-1',
+          name: 'Agent One',
+          callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
+          cash: '10000.00',
+          marginUsed: '0.00',
+          marginLimit: '50000.00',
+        },
+      ];
+
+      let callCount = 0;
+      (db.select as Mock).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              return Promise.resolve(mockAgents);
+            }
+            return Promise.resolve([]);
+          }),
+        }),
+      });
+
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({}),
+      });
+
+      await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
+
+      expect(dbService.recordWebhookFailure).toHaveBeenCalledWith('agent-1', 'HTTP 500: Internal Server Error');
+      expect(dbService.recordWebhookSuccess).not.toHaveBeenCalled();
+    });
+
+    it('records webhook failure for network error', async () => {
+      const mockAgents = [
+        {
+          id: 'agent-1',
+          name: 'Agent One',
+          callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
+          cash: '10000.00',
+          marginUsed: '0.00',
+          marginLimit: '50000.00',
+        },
+      ];
+
+      let callCount = 0;
+      (db.select as Mock).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              return Promise.resolve(mockAgents);
+            }
+            return Promise.resolve([]);
+          }),
+        }),
+      });
+
+      mockFetch.mockRejectedValue(new Error('Connection refused'));
+
+      await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
+
+      expect(dbService.recordWebhookFailure).toHaveBeenCalledWith('agent-1', 'Connection refused');
+      expect(dbService.recordWebhookSuccess).not.toHaveBeenCalled();
+    });
+
+    it('tracks successes and failures separately for multiple agents', async () => {
+      const mockAgents = [
+        {
+          id: 'agent-1',
+          name: 'Agent One',
+          callbackUrl: 'https://agent1.example.com/webhook',
+          webhookSecret: 'secret1',
+          cash: '10000.00',
+          marginUsed: '0.00',
+          marginLimit: '50000.00',
+        },
+        {
+          id: 'agent-2',
+          name: 'Agent Two',
+          callbackUrl: 'https://agent2.example.com/webhook',
+          webhookSecret: 'secret2',
+          cash: '20000.00',
+          marginUsed: '0.00',
+          marginLimit: '100000.00',
+        },
+      ];
+
+      let callCount = 0;
+      (db.select as Mock).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              return Promise.resolve(mockAgents);
+            }
+            return Promise.resolve([]);
+          }),
+        }),
+      });
+
+      // Agent 1 succeeds, Agent 2 fails
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          json: () => Promise.resolve({}),
+        });
+
+      await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
+
+      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1');
+      expect(dbService.recordWebhookFailure).toHaveBeenCalledWith('agent-2', 'HTTP 503: Service Unavailable');
     });
   });
 });

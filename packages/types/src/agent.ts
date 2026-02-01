@@ -32,6 +32,11 @@ export interface Agent {
   status: AgentStatus;
   reputation: number;
 
+  // Webhook tracking
+  webhookFailures: number;
+  lastWebhookError?: string;
+  lastWebhookSuccessAt?: Date;
+
   // Timestamps
   createdAt: Date;
   lastActiveAt?: Date;

@@ -3,6 +3,7 @@ import { eq, and, isNotNull } from 'drizzle-orm';
 import type { TickWebhook, AgentAction } from '@wallstreetsim/types';
 import type { PriceUpdate, Trade, MarketEvent, NewsArticle, WorldState } from '@wallstreetsim/types';
 import { signWebhookPayload } from '@wallstreetsim/utils';
+import * as dbService from './db';
 
 interface AgentWithCallback {
   id: string;
@@ -271,6 +272,17 @@ export async function dispatchWebhooks(
       );
 
       return sendWebhook(agent, payload, fullConfig);
+    })
+  );
+
+  // Track failures/successes per agent
+  await Promise.all(
+    results.map(async (result) => {
+      if (result.success) {
+        await dbService.recordWebhookSuccess(result.agentId);
+      } else {
+        await dbService.recordWebhookFailure(result.agentId, result.error || 'Unknown error');
+      }
     })
   );
 
