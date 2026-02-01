@@ -46,6 +46,8 @@ export const agentsRelations = relations(agents, ({ many }) => ({
   sellTrades: many(trades, { relationName: 'sellTrades' }),
   actions: many(actions),
   investigations: many(investigations),
+  sentMessages: many(messages, { relationName: 'sentMessages' }),
+  receivedMessages: many(messages, { relationName: 'receivedMessages' }),
 }));
 
 // Forward declarations for relations (will be imported from other files)
@@ -54,3 +56,4 @@ import { orders } from './orders';
 import { trades } from './trades';
 import { actions } from './actions';
 import { investigations } from './investigations';
+import { messages } from './messages';

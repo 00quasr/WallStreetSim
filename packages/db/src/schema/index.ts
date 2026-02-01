@@ -7,4 +7,5 @@ export { trades, tradesRelations } from './trades';
 export { actions, actionsRelations } from './actions';
 export { investigations, investigationsRelations } from './investigations';
 export { news } from './news';
+export { messages, messagesRelations } from './messages';
 export { worldState } from './world-state';
