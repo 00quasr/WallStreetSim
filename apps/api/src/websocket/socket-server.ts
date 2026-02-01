@@ -14,14 +14,32 @@ import type {
 
 // Redis channel names (mirroring engine's redis.ts)
 const CHANNELS = {
-  TICK_UPDATES: 'channel:tick_updates',
-  MARKET_UPDATES: 'channel:market',
+  TICK: 'channel:tick',
+  TICK_UPDATES: 'channel:tick_updates', // Legacy alias
+  MARKET_ALL: 'channel:market:all',
+  MARKET_UPDATES: 'channel:market', // Legacy alias
   PRICE_UPDATES: 'channel:prices',
   NEWS_UPDATES: 'channel:news',
   LEADERBOARD_UPDATES: 'channel:leaderboard',
+  TRADES: 'channel:trades',
+  EVENTS: 'channel:events',
   AGENT_UPDATES: (agentId: string) => `channel:agent:${agentId}`,
-  SYMBOL_UPDATES: (symbol: string) => `channel:market:${symbol}`,
+  MARKET_SYMBOL: (symbol: string) => `channel:market:${symbol}`,
+  SYMBOL_UPDATES: (symbol: string) => `channel:market:${symbol}`, // Legacy alias
 };
+
+// Public channels that don't require authentication
+const PUBLIC_CHANNELS = new Set([
+  'tick',
+  'tick_updates', // Legacy alias
+  'market',
+  'market:all',
+  'prices',
+  'news',
+  'leaderboard',
+  'trades',
+  'events',
+]);
 
 // Private channels that require authentication
 const PRIVATE_CHANNEL_PREFIXES = ['portfolio', 'orders', 'messages', 'alerts', 'investigations'] as const;
@@ -34,6 +52,19 @@ interface AuthenticatedSocket extends Socket {
 
 function isPrivateChannel(channel: string): boolean {
   return PRIVATE_CHANNEL_PREFIXES.some(prefix => channel === prefix || channel.startsWith(`${prefix}:`));
+}
+
+function isPublicChannel(channel: string): boolean {
+  // Exact match public channels
+  if (PUBLIC_CHANNELS.has(channel)) return true;
+
+  // Pattern match market:SYMBOL channels (e.g., market:APEX, market:NOVA)
+  if (channel.startsWith('market:') && channel !== 'market:all') return true;
+
+  // Legacy pattern match symbol:SYMBOL channels (e.g., symbol:APEX)
+  if (channel.startsWith('symbol:')) return true;
+
+  return false;
 }
 
 function getPrivateChannelRoom(channel: string, agentId: string): string {
@@ -98,11 +129,15 @@ export class SocketServer {
 
   private setupRedisSubscriptions(): void {
     // Subscribe to global public channels
-    this.subscribeToRedisChannel(CHANNELS.TICK_UPDATES);
-    this.subscribeToRedisChannel(CHANNELS.MARKET_UPDATES);
+    this.subscribeToRedisChannel(CHANNELS.TICK);
+    this.subscribeToRedisChannel(CHANNELS.TICK_UPDATES); // Legacy
+    this.subscribeToRedisChannel(CHANNELS.MARKET_ALL);
+    this.subscribeToRedisChannel(CHANNELS.MARKET_UPDATES); // Legacy
     this.subscribeToRedisChannel(CHANNELS.PRICE_UPDATES);
     this.subscribeToRedisChannel(CHANNELS.NEWS_UPDATES);
     this.subscribeToRedisChannel(CHANNELS.LEADERBOARD_UPDATES);
+    this.subscribeToRedisChannel(CHANNELS.TRADES);
+    this.subscribeToRedisChannel(CHANNELS.EVENTS);
 
     // Handle Redis messages
     this.redisSubscriber.on('message', (channel: string, message: string) => {
@@ -121,11 +156,13 @@ export class SocketServer {
     try {
       const parsed = JSON.parse(message) as WSMessage;
 
-      if (channel === CHANNELS.TICK_UPDATES) {
-        // Broadcast tick updates to all connected clients
+      if (channel === CHANNELS.TICK || channel === CHANNELS.TICK_UPDATES) {
+        // Broadcast tick updates to all connected clients (both 'tick' and legacy 'tick_updates' rooms)
+        this.io.to('tick').emit('TICK_UPDATE', parsed);
         this.io.to('tick_updates').emit('TICK_UPDATE', parsed);
-      } else if (channel === CHANNELS.MARKET_UPDATES) {
-        // Broadcast market updates to subscribers
+      } else if (channel === CHANNELS.MARKET_ALL || channel === CHANNELS.MARKET_UPDATES) {
+        // Broadcast market updates to subscribers (both 'market:all' and legacy 'market' rooms)
+        this.io.to('market:all').emit('MARKET_UPDATE', parsed);
         this.io.to('market').emit('MARKET_UPDATE', parsed);
       } else if (channel === CHANNELS.PRICE_UPDATES) {
         // Broadcast price updates to subscribers
@@ -136,9 +173,17 @@ export class SocketServer {
       } else if (channel === CHANNELS.LEADERBOARD_UPDATES) {
         // Broadcast leaderboard updates to subscribers
         this.io.to('leaderboard').emit('LEADERBOARD_UPDATE', parsed);
+      } else if (channel === CHANNELS.TRADES) {
+        // Broadcast trade updates to subscribers
+        this.io.to('trades').emit('TRADE', parsed);
+      } else if (channel === CHANNELS.EVENTS) {
+        // Broadcast event updates to subscribers
+        this.io.to('events').emit('EVENT', parsed);
       } else if (channel.startsWith('channel:market:')) {
-        // Symbol-specific updates
+        // Symbol-specific updates (e.g., channel:market:APEX)
         const symbol = channel.replace('channel:market:', '');
+        // Broadcast to both market:SYMBOL and legacy symbol:SYMBOL rooms
+        this.io.to(`market:${symbol}`).emit('MARKET_UPDATE', parsed);
         this.io.to(`symbol:${symbol}`).emit('MARKET_UPDATE', parsed);
       } else if (channel.startsWith('channel:agent:')) {
         // Agent-specific updates (private)
@@ -194,9 +239,10 @@ export class SocketServer {
     this.io.on('connection', (socket: AuthenticatedSocket) => {
       console.log(`[Socket.io] Client connected: ${socket.id}`);
 
-      // Auto-join tick updates room - clients can connect without authentication
+      // Auto-join tick rooms - clients can connect without authentication
       // and receive public data (tick updates, prices, news, etc.)
-      socket.join('tick_updates');
+      socket.join('tick');
+      socket.join('tick_updates'); // Legacy room for backward compatibility
 
       // Emit connected event with available public channels
       socket.emit('CONNECTED', {
@@ -204,7 +250,7 @@ export class SocketServer {
         payload: {
           socketId: socket.id,
           authenticated: false,
-          publicChannels: ['tick_updates', 'market', 'prices', 'news', 'leaderboard'],
+          publicChannels: ['tick', 'market:all', 'news', 'leaderboard', 'trades', 'events', 'prices', 'tick_updates', 'market'],
           message: 'Connected to WallStreetSim. Authentication optional for public data.',
         },
         timestamp: new Date().toISOString(),
@@ -296,28 +342,57 @@ export class SocketServer {
         continue;
       }
 
-      // Public channels
-      if (channel === 'market') {
-        socket.join('market');
-        subscribedChannels.push(channel);
-      } else if (channel === 'prices') {
-        socket.join('prices');
-        subscribedChannels.push(channel);
-      } else if (channel === 'news') {
-        socket.join('news');
-        subscribedChannels.push(channel);
-      } else if (channel === 'leaderboard') {
-        socket.join('leaderboard');
-        subscribedChannels.push(channel);
-      } else if (channel.startsWith('symbol:')) {
-        const symbol = channel.replace('symbol:', '');
-        socket.join(`symbol:${symbol}`);
-        // Subscribe to symbol-specific Redis channel
-        this.subscribeToRedisChannel(CHANNELS.SYMBOL_UPDATES(symbol));
-        subscribedChannels.push(channel);
-      } else if (channel === 'tick_updates') {
-        socket.join('tick_updates');
-        subscribedChannels.push(channel);
+      // Public channels - use isPublicChannel helper for validation
+      if (isPublicChannel(channel)) {
+        // Handle tick channels
+        if (channel === 'tick') {
+          socket.join('tick');
+          subscribedChannels.push(channel);
+        } else if (channel === 'tick_updates') {
+          // Legacy alias
+          socket.join('tick_updates');
+          subscribedChannels.push(channel);
+        }
+        // Handle market channels
+        else if (channel === 'market:all') {
+          socket.join('market:all');
+          subscribedChannels.push(channel);
+        } else if (channel === 'market') {
+          // Legacy alias
+          socket.join('market');
+          subscribedChannels.push(channel);
+        } else if (channel.startsWith('market:')) {
+          // Symbol-specific: market:SYMBOL (e.g., market:APEX)
+          const symbol = channel.replace('market:', '');
+          socket.join(`market:${symbol}`);
+          // Subscribe to symbol-specific Redis channel
+          this.subscribeToRedisChannel(CHANNELS.MARKET_SYMBOL(symbol));
+          subscribedChannels.push(channel);
+        } else if (channel.startsWith('symbol:')) {
+          // Legacy symbol-specific: symbol:SYMBOL (e.g., symbol:APEX)
+          const symbol = channel.replace('symbol:', '');
+          socket.join(`symbol:${symbol}`);
+          // Subscribe to symbol-specific Redis channel
+          this.subscribeToRedisChannel(CHANNELS.SYMBOL_UPDATES(symbol));
+          subscribedChannels.push(channel);
+        }
+        // Handle other public channels
+        else if (channel === 'prices') {
+          socket.join('prices');
+          subscribedChannels.push(channel);
+        } else if (channel === 'news') {
+          socket.join('news');
+          subscribedChannels.push(channel);
+        } else if (channel === 'leaderboard') {
+          socket.join('leaderboard');
+          subscribedChannels.push(channel);
+        } else if (channel === 'trades') {
+          socket.join('trades');
+          subscribedChannels.push(channel);
+        } else if (channel === 'events') {
+          socket.join('events');
+          subscribedChannels.push(channel);
+        }
       } else {
         failedChannels.push({
           channel,
@@ -354,24 +429,9 @@ export class SocketServer {
         continue;
       }
 
-      // Public channels
-      if (channel === 'market') {
-        socket.leave('market');
-        unsubscribedChannels.push(channel);
-      } else if (channel === 'prices') {
-        socket.leave('prices');
-        unsubscribedChannels.push(channel);
-      } else if (channel === 'news') {
-        socket.leave('news');
-        unsubscribedChannels.push(channel);
-      } else if (channel === 'leaderboard') {
-        socket.leave('leaderboard');
-        unsubscribedChannels.push(channel);
-      } else if (channel.startsWith('symbol:')) {
+      // Public channels - use isPublicChannel helper for validation
+      if (isPublicChannel(channel)) {
         socket.leave(channel);
-        unsubscribedChannels.push(channel);
-      } else if (channel === 'tick_updates') {
-        socket.leave('tick_updates');
         unsubscribedChannels.push(channel);
       }
     }
