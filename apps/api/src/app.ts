@@ -14,6 +14,7 @@ import { newsRouter } from './routes/news';
 import { world } from './routes/world';
 import { config } from './routes/config';
 import { skill } from './routes/skill';
+import { openapi } from './routes/openapi';
 
 const app = new Hono();
 
@@ -53,6 +54,7 @@ app.route('/news', newsRouter);
 app.route('/world', world);
 app.route('/config', config);
 app.route('/', skill);
+app.route('/', openapi);
 
 // 404 handler
 app.notFound(notFoundHandler);
