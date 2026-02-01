@@ -1,7 +1,37 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, Server as HttpServer } from 'http';
 import { io as ioc, Socket as ClientSocket } from 'socket.io-client';
 import { SocketServer } from './socket-server';
+
+// Mock the Redis adapter with the proper adapter interface
+vi.mock('@socket.io/redis-adapter', () => ({
+  createAdapter: vi.fn((pub: unknown, sub: unknown) => {
+    // Return a function that creates a mock adapter instance
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return function MockRedisAdapter(this: any, nsp: unknown) {
+      // Call the base Adapter constructor behavior
+      return Object.assign(this, {
+        nsp,
+        rooms: new Map(),
+        sids: new Map(),
+        init: vi.fn(),
+        close: vi.fn(),
+        addAll: vi.fn(),
+        del: vi.fn(),
+        delAll: vi.fn(),
+        broadcast: vi.fn(),
+        serverSideEmit: vi.fn(),
+        fetchSockets: vi.fn().mockResolvedValue([]),
+        addSockets: vi.fn(),
+        delSockets: vi.fn(),
+        disconnectSockets: vi.fn(),
+        serverCount: vi.fn().mockResolvedValue(1),
+        _pub: pub,
+        _sub: sub,
+      });
+    };
+  }),
+}));
 
 describe('SocketServer', () => {
   let httpServer: HttpServer;
@@ -487,6 +517,50 @@ describe('SocketServer', () => {
       });
 
       expect(socketServer.hasAuthenticatedClients('agent123')).toBe(true);
+    });
+  });
+
+  describe('Redis adapter', () => {
+    it('should have isRedisAdapterEnabled method', () => {
+      expect(typeof socketServer.isRedisAdapterEnabled).toBe('function');
+    });
+
+    it('should return false when Redis adapter is not enabled', () => {
+      expect(socketServer.isRedisAdapterEnabled()).toBe(false);
+    });
+
+    it('should enable Redis adapter when option is passed', async () => {
+      // Close the default server
+      if (clientSocket?.connected) {
+        clientSocket.disconnect();
+      }
+      await socketServer.close();
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+
+      // Create a new server with Redis adapter enabled
+      const adapterHttpServer = createServer();
+      const adapterSocketServer = new SocketServer(adapterHttpServer, { enableRedisAdapter: true });
+
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.listen(TEST_PORT + 1, resolve);
+      });
+
+      expect(adapterSocketServer.isRedisAdapterEnabled()).toBe(true);
+
+      // Cleanup
+      await adapterSocketServer.close();
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.close(() => resolve());
+      });
+
+      // Restore original server for subsequent tests
+      httpServer = createServer();
+      socketServer = new SocketServer(httpServer);
+      await new Promise<void>((resolve) => {
+        httpServer.listen(TEST_PORT, resolve);
+      });
     });
   });
 });

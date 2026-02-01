@@ -2,6 +2,7 @@ import { Server as SocketIOServer, Socket } from 'socket.io';
 import type { Server as HttpServer } from 'http';
 import type { Http2SecureServer, Http2Server } from 'http2';
 import Redis from 'ioredis';
+import { createAdapter } from '@socket.io/redis-adapter';
 
 type HttpServerType = HttpServer | Http2SecureServer | Http2Server;
 import type {
@@ -40,12 +41,19 @@ function getPrivateChannelRoom(channel: string, agentId: string): string {
   return `private:${agentId}:${channel}`;
 }
 
+export interface SocketServerOptions {
+  enableRedisAdapter?: boolean;
+}
+
 export class SocketServer {
   private io: SocketIOServer;
   private redisSubscriber: Redis;
+  private redisPub?: Redis;
+  private redisSub?: Redis;
   private subscribedChannels: Set<string> = new Set();
+  private redisAdapterEnabled: boolean = false;
 
-  constructor(httpServer: HttpServerType) {
+  constructor(httpServer: HttpServerType, options: SocketServerOptions = {}) {
     this.io = new SocketIOServer(httpServer, {
       cors: {
         origin: '*',
@@ -57,8 +65,35 @@ export class SocketServer {
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
     this.redisSubscriber = new Redis(redisUrl);
 
+    // Enable Redis adapter for horizontal scaling if requested or via env var
+    const enableAdapter = options.enableRedisAdapter ?? process.env.SOCKET_REDIS_ADAPTER === 'true';
+    if (enableAdapter) {
+      this.setupRedisAdapter(redisUrl);
+    }
+
     this.setupRedisSubscriptions();
     this.setupSocketHandlers();
+  }
+
+  private setupRedisAdapter(redisUrl: string): void {
+    try {
+      this.redisPub = new Redis(redisUrl);
+      this.redisSub = new Redis(redisUrl);
+
+      this.io.adapter(createAdapter(this.redisPub, this.redisSub));
+      this.redisAdapterEnabled = true;
+      console.log('[Socket.io] Redis adapter enabled for horizontal scaling');
+    } catch (error) {
+      console.error('[Socket.io] Failed to initialize Redis adapter:', error);
+      console.log('[Socket.io] Continuing without Redis adapter (single instance mode)');
+    }
+  }
+
+  /**
+   * Check if Redis adapter is enabled
+   */
+  public isRedisAdapterEnabled(): boolean {
+    return this.redisAdapterEnabled;
   }
 
   private setupRedisSubscriptions(): void {
@@ -392,6 +427,13 @@ export class SocketServer {
    * Close the server and cleanup
    */
   public async close(): Promise<void> {
+    // Close Redis adapter connections if enabled
+    if (this.redisPub) {
+      await this.redisPub.quit();
+    }
+    if (this.redisSub) {
+      await this.redisSub.quit();
+    }
     await this.redisSubscriber.quit();
     this.io.close();
   }
@@ -402,9 +444,9 @@ let socketServer: SocketServer | null = null;
 /**
  * Initialize the Socket.io server
  */
-export function initSocketServer(httpServer: HttpServerType): SocketServer {
+export function initSocketServer(httpServer: HttpServerType, options?: SocketServerOptions): SocketServer {
   if (!socketServer) {
-    socketServer = new SocketServer(httpServer);
+    socketServer = new SocketServer(httpServer, options);
   }
   return socketServer;
 }
