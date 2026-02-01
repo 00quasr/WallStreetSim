@@ -1,4 +1,4 @@
-import { db, agents, orders, actions, news } from '@wallstreetsim/db';
+import { db, agents, orders, actions, news, messages, investigations } from '@wallstreetsim/db';
 import { eq } from 'drizzle-orm';
 import { AgentActionSchema } from '@wallstreetsim/utils';
 import type { AgentAction } from '@wallstreetsim/types';
@@ -296,19 +296,52 @@ async function processRumor(
 }
 
 /**
- * Process message action
+ * Process message action (send messages to other agents)
  */
 async function processMessage(
   agentId: string,
   action: { type: 'MESSAGE'; targetAgent: string; content: string },
   tick: number
 ): Promise<ActionProcessResult> {
-  // TODO: Implement full messaging (store message, notify target agent)
+  const { targetAgent, content } = action;
+
+  // Prevent sending messages to self
+  if (targetAgent === agentId) {
+    return { action: 'MESSAGE', success: false, message: 'Cannot send message to yourself' };
+  }
+
+  // Verify target agent exists
+  const [recipient] = await db
+    .select({ id: agents.id, status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, targetAgent));
+
+  if (!recipient) {
+    return { action: 'MESSAGE', success: false, message: 'Target agent not found' };
+  }
+
+  // Check if target agent is active (can't message fled/imprisoned agents)
+  if (recipient.status !== 'active') {
+    return { action: 'MESSAGE', success: false, message: `Cannot message agent with status: ${recipient.status}` };
+  }
+
+  // Store the message
+  const [message] = await db.insert(messages).values({
+    tick,
+    senderId: agentId,
+    recipientId: targetAgent,
+    channel: 'direct',
+    content,
+  }).returning();
+
   return {
     action: 'MESSAGE',
     success: true,
     message: 'Message sent',
-    data: { targetAgent: action.targetAgent },
+    data: {
+      messageId: message.id,
+      targetAgent,
+    },
   };
 }
 
@@ -330,7 +363,14 @@ async function processAllyRequest(
 }
 
 /**
- * Process bribe action
+ * Process bribe action (attempt to bribe SEC investigator)
+ *
+ * Mechanics:
+ * - Only SEC investigators can be bribed
+ * - Higher bribe amounts have better success rates
+ * - Detection probability is based on amount and target's reputation
+ * - If detected, opens an investigation against the briber
+ * - If successful, reduces scrutiny from that SEC investigator
  */
 async function processBribe(
   agentId: string,
@@ -341,21 +381,140 @@ async function processBribe(
   const { targetAgent, amount } = action;
   const agentCash = parseFloat(agent.cash || '0');
 
+  // Cannot bribe yourself
+  if (targetAgent === agentId) {
+    return { action: 'BRIBE', success: false, message: 'Cannot bribe yourself' };
+  }
+
+  // Check sufficient funds
   if (amount > agentCash) {
     return { action: 'BRIBE', success: false, message: 'Insufficient funds' };
   }
 
-  // Deduct cash
+  // Minimum bribe amount
+  const minBribeAmount = 1000;
+  if (amount < minBribeAmount) {
+    return { action: 'BRIBE', success: false, message: `Minimum bribe amount is $${minBribeAmount}` };
+  }
+
+  // Verify target agent exists and is an SEC investigator
+  const [target] = await db
+    .select({ id: agents.id, role: agents.role, status: agents.status, reputation: agents.reputation, cash: agents.cash, metadata: agents.metadata })
+    .from(agents)
+    .where(eq(agents.id, targetAgent));
+
+  if (!target) {
+    return { action: 'BRIBE', success: false, message: 'Target agent not found' };
+  }
+
+  if (target.role !== 'sec_investigator') {
+    return { action: 'BRIBE', success: false, message: 'Can only bribe SEC investigators' };
+  }
+
+  if (target.status !== 'active') {
+    return { action: 'BRIBE', success: false, message: `Cannot bribe agent with status: ${target.status}` };
+  }
+
+  // Deduct cash from briber
   await db.update(agents)
     .set({ cash: (agentCash - amount).toFixed(2) })
     .where(eq(agents.id, agentId));
 
-  // TODO: Implement full bribe mechanics (risk of detection, target notification)
+  // Calculate detection probability
+  // Base detection: 30%
+  // Higher reputation SEC = more likely to reject and report
+  // Higher bribe amounts = slightly lower detection (they're more tempted)
+  const baseDetectionRate = 0.3;
+  const reputationFactor = (target.reputation / 100) * 0.4; // 0-40% additional based on SEC reputation
+  const amountFactor = Math.min(amount / 100000, 0.2); // Up to 20% reduction for large bribes
+  const detectionProbability = Math.max(0.1, Math.min(0.9, baseDetectionRate + reputationFactor - amountFactor));
+
+  // Roll for detection
+  const detected = Math.random() < detectionProbability;
+
+  if (detected) {
+    // Bribe rejected! SEC investigator reports the briber
+    // Create investigation against the briber
+    await db.insert(investigations).values({
+      agentId: agentId,
+      crimeType: 'bribery',
+      evidence: [{ tick, type: 'bribery_attempt', targetAgent, amount }],
+      status: 'open',
+      tickOpened: tick,
+    });
+
+    // SEC investigator gains reputation for rejecting bribe
+    await db.update(agents)
+      .set({ reputation: Math.min(100, target.reputation + 5) })
+      .where(eq(agents.id, targetAgent));
+
+    // Briber loses reputation
+    await db.update(agents)
+      .set({ reputation: Math.max(0, agent.reputation - 10) })
+      .where(eq(agents.id, agentId));
+
+    // Notify both parties via messages
+    await db.insert(messages).values({
+      tick,
+      senderId: targetAgent,
+      recipientId: agentId,
+      channel: 'system',
+      content: `Your bribe attempt of $${amount.toLocaleString()} was rejected and reported to the authorities.`,
+    });
+
+    return {
+      action: 'BRIBE',
+      success: false,
+      message: 'Bribe rejected! Investigation opened against you.',
+      data: {
+        targetAgent,
+        amount,
+        detected: true,
+        investigationOpened: true,
+      },
+    };
+  }
+
+  // Bribe accepted!
+  // Transfer money to SEC investigator
+  const targetCash = parseFloat(target.cash || '0');
+  await db.update(agents)
+    .set({ cash: (targetCash + amount).toFixed(2) })
+    .where(eq(agents.id, targetAgent));
+
+  // Update SEC investigator's metadata to track who has bribed them
+  const currentMetadata = (target.metadata as Record<string, unknown>) || {};
+  const bribedBy = (currentMetadata.bribedBy as string[]) || [];
+  if (!bribedBy.includes(agentId)) {
+    bribedBy.push(agentId);
+  }
+  await db.update(agents)
+    .set({ metadata: { ...currentMetadata, bribedBy } })
+    .where(eq(agents.id, targetAgent));
+
+  // SEC investigator loses reputation (corruption)
+  await db.update(agents)
+    .set({ reputation: Math.max(0, target.reputation - 10) })
+    .where(eq(agents.id, targetAgent));
+
+  // Send confirmation message to briber
+  await db.insert(messages).values({
+    tick,
+    senderId: targetAgent,
+    recipientId: agentId,
+    channel: 'direct',
+    content: `Your proposal has been accepted. I will look the other way.`,
+  });
+
   return {
     action: 'BRIBE',
     success: true,
-    message: 'Bribe offered',
-    data: { targetAgent, amount },
+    message: 'Bribe accepted. SEC investigator will overlook your activities.',
+    data: {
+      targetAgent,
+      amount,
+      detected: false,
+    },
   };
 }
 

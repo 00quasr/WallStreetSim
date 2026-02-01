@@ -12,10 +12,12 @@ vi.mock('@wallstreetsim/db', () => ({
     update: vi.fn().mockReturnThis(),
     set: vi.fn().mockReturnThis(),
   },
-  agents: { id: 'id', cash: 'cash', status: 'status', reputation: 'reputation' },
+  agents: { id: 'id', cash: 'cash', status: 'status', reputation: 'reputation', role: 'role', metadata: 'metadata' },
   orders: { id: 'id', agentId: 'agent_id', status: 'status' },
   actions: {},
   news: { id: 'id' },
+  messages: { id: 'id', senderId: 'sender_id', recipientId: 'recipient_id', content: 'content' },
+  investigations: { id: 'id', agentId: 'agent_id', crimeType: 'crime_type', status: 'status' },
 }));
 
 import { processWebhookActions } from '../services/action-processor';
@@ -500,12 +502,22 @@ describe('Action Processor', () => {
       expect(results[1].succeeded).toBe(1);
     });
 
-    it('processes BRIBE action and deducts cash', async () => {
+    it('processes BRIBE action successfully when accepted', async () => {
       const mockAgent = {
         id: 'agent-1',
         name: 'Test Agent',
-        cash: '10000.00',
+        cash: '100000.00',
         status: 'active',
+        reputation: 50,
+      };
+
+      const mockSECAgent = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        role: 'sec_investigator',
+        status: 'active',
+        reputation: 30, // Low reputation = more corruptible
+        cash: '50000.00',
+        metadata: {},
       };
 
       let selectCallCount = 0;
@@ -516,6 +528,9 @@ describe('Action Processor', () => {
             if (selectCallCount === 1) {
               return Promise.resolve([mockAgent]);
             }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockSECAgent]);
+            }
             return Promise.resolve([]);
           }),
         })),
@@ -523,7 +538,7 @@ describe('Action Processor', () => {
 
       (db.insert as Mock).mockImplementation(() => ({
         values: vi.fn().mockImplementation(() => ({
-          returning: vi.fn().mockResolvedValue([]),
+          returning: vi.fn().mockResolvedValue([{ id: 'message-123' }]),
         })),
       }));
 
@@ -533,23 +548,29 @@ describe('Action Processor', () => {
         })),
       }));
 
+      // Mock Math.random to ensure bribe is accepted (detection probability ~0.22)
+      const originalRandom = Math.random;
+      Math.random = () => 0.5; // Above detection probability, so bribe is accepted
+
       const webhookResults: WebhookResult[] = [
         {
           agentId: 'agent-1',
           success: true,
           statusCode: 200,
           actions: [
-            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 1000 },
+            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 50000 },
           ],
           responseTimeMs: 50,
         },
       ];
 
       const results = await processWebhookActions(webhookResults, 100);
+      Math.random = originalRandom;
 
       expect(results).toHaveLength(1);
       expect(results[0].results[0].action).toBe('BRIBE');
       expect(results[0].results[0].success).toBe(true);
+      expect(results[0].results[0].data?.detected).toBe(false);
       expect(db.update).toHaveBeenCalled();
     });
 
@@ -559,6 +580,7 @@ describe('Action Processor', () => {
         name: 'Test Agent',
         cash: '500.00', // Less than bribe amount
         status: 'active',
+        reputation: 50,
       };
 
       let selectCallCount = 0;
@@ -586,7 +608,7 @@ describe('Action Processor', () => {
           success: true,
           statusCode: 200,
           actions: [
-            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 1000 },
+            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 5000 },
           ],
           responseTimeMs: 50,
         },
@@ -597,6 +619,350 @@ describe('Action Processor', () => {
       expect(results).toHaveLength(1);
       expect(results[0].results[0].success).toBe(false);
       expect(results[0].results[0].message).toBe('Insufficient funds');
+    });
+
+    it('rejects BRIBE action when target is not SEC investigator', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '100000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockNonSECAgent = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        role: 'hedge_fund_manager', // Not an SEC investigator
+        status: 'active',
+        reputation: 50,
+        cash: '1000000.00',
+        metadata: {},
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockNonSECAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 5000 },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Can only bribe SEC investigators');
+    });
+
+    it('rejects BRIBE action when target agent not found', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '100000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]); // Target not found
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 5000 },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Target agent not found');
+    });
+
+    it('rejects BRIBE action when trying to bribe yourself', async () => {
+      const agentUuid = '550e8400-e29b-41d4-a716-446655440001';
+      const mockAgent = {
+        id: agentUuid,
+        name: 'Test Agent',
+        cash: '100000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: agentUuid,
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'BRIBE', targetAgent: agentUuid, amount: 5000 },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Cannot bribe yourself');
+    });
+
+    it('rejects BRIBE action when amount is below minimum', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '100000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 500 },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Minimum bribe amount is $1000');
+    });
+
+    it('opens investigation when BRIBE is detected', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '100000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockSECAgent = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        role: 'sec_investigator',
+        status: 'active',
+        reputation: 80, // High reputation = more likely to reject
+        cash: '50000.00',
+        metadata: {},
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockSECAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'investigation-123' }]),
+      });
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: insertValuesMock,
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      // Mock Math.random to ensure bribe is detected (detection probability ~0.62)
+      const originalRandom = Math.random;
+      Math.random = () => 0.1; // Below detection probability, so bribe is detected
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 5000 },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+      Math.random = originalRandom;
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].action).toBe('BRIBE');
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].data?.detected).toBe(true);
+      expect(results[0].results[0].data?.investigationOpened).toBe(true);
+
+      // Verify investigation was created
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          crimeType: 'bribery',
+          status: 'open',
+          tickOpened: 100,
+        })
+      );
+    });
+
+    it('rejects BRIBE action when SEC investigator is not active', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '100000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      const mockSECAgent = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        role: 'sec_investigator',
+        status: 'imprisoned', // Not active
+        reputation: 50,
+        cash: '50000.00',
+        metadata: {},
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockSECAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'BRIBE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', amount: 5000 },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Cannot bribe agent with status: imprisoned');
     });
 
     it('processes FLEE action and updates agent status', async () => {
@@ -930,6 +1296,292 @@ describe('Action Processor', () => {
 
       // Should have at least 2 inserts: one for order, one for action log
       expect(db.insert).toHaveBeenCalledTimes(2);
+    });
+
+    it('processes MESSAGE action successfully', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+      };
+
+      const mockRecipient = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        status: 'active',
+      };
+
+      const mockMessage = {
+        id: 'message-123',
+        senderId: 'agent-1',
+        recipientId: '550e8400-e29b-41d4-a716-446655440000',
+        content: 'Hello, want to form an alliance?',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockRecipient]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([mockMessage]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'MESSAGE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', content: 'Hello, want to form an alliance?' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].action).toBe('MESSAGE');
+      expect(results[0].results[0].success).toBe(true);
+      expect(results[0].results[0].message).toBe('Message sent');
+      expect(results[0].results[0].data?.messageId).toBe('message-123');
+      expect(results[0].results[0].data?.targetAgent).toBe('550e8400-e29b-41d4-a716-446655440000');
+    });
+
+    it('rejects MESSAGE action when target agent not found', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            // Target agent not found
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'MESSAGE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', content: 'Hello there!' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].action).toBe('MESSAGE');
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Target agent not found');
+    });
+
+    it('rejects MESSAGE action when target agent is not active', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+      };
+
+      const mockRecipient = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        status: 'imprisoned', // Target is imprisoned
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockRecipient]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'MESSAGE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', content: 'Hello there!' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].action).toBe('MESSAGE');
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Cannot message agent with status: imprisoned');
+    });
+
+    it('rejects MESSAGE action when sending to self', async () => {
+      const agentUuid = '550e8400-e29b-41d4-a716-446655440001';
+      const mockAgent = {
+        id: agentUuid,
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: agentUuid,
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'MESSAGE', targetAgent: agentUuid, content: 'Talking to myself...' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].action).toBe('MESSAGE');
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Cannot send message to yourself');
+    });
+
+    it('stores message with correct channel and content', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+      };
+
+      const mockRecipient = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        status: 'active',
+      };
+
+      const mockMessage = {
+        id: 'message-456',
+        senderId: 'agent-1',
+        recipientId: '550e8400-e29b-41d4-a716-446655440000',
+        content: 'Secret trading tip: buy AAPL!',
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            if (selectCallCount === 2) {
+              return Promise.resolve([mockRecipient]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([mockMessage]),
+      });
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: insertValuesMock,
+      }));
+
+      const messageContent = 'Secret trading tip: buy AAPL!';
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'MESSAGE', targetAgent: '550e8400-e29b-41d4-a716-446655440000', content: messageContent },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      await processWebhookActions(webhookResults, 100);
+
+      // First insert call should be for the message
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tick: 100,
+          senderId: 'agent-1',
+          recipientId: '550e8400-e29b-41d4-a716-446655440000',
+          channel: 'direct',
+          content: messageContent,
+        })
+      );
     });
   });
 });
