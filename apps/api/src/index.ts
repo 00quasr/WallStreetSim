@@ -19,8 +19,14 @@ const server = serve({
 
 // Initialize Socket.io server alongside HTTP server (synchronously)
 // This ensures WebSocket is ready to accept connections as soon as HTTP starts listening
-const socketServer = initSocketServer(server);
-console.log('Socket.io server initialized');
+// Enable Redis adapter when SOCKET_REDIS_ADAPTER=true for horizontal scaling
+const socketServer = initSocketServer(server, {
+  enableRedisAdapter: process.env.SOCKET_REDIS_ADAPTER === 'true',
+});
+const adapterStatus = socketServer.isRedisAdapterEnabled()
+  ? '(Redis adapter enabled for horizontal scaling)'
+  : '(single instance mode)';
+console.log(`Socket.io server initialized ${adapterStatus}`);
 
 // Log server info once HTTP server is ready
 server.on('listening', () => {

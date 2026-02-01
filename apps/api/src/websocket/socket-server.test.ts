@@ -1116,6 +1116,162 @@ describe('SocketServer', () => {
         httpServer.listen(TEST_PORT, resolve);
       });
     });
+
+    it('should enable Redis adapter via SOCKET_REDIS_ADAPTER env var', async () => {
+      // Close the default server
+      if (clientSocket?.connected) {
+        clientSocket.disconnect();
+      }
+      await socketServer.close();
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+
+      // Set env var
+      const originalEnv = process.env.SOCKET_REDIS_ADAPTER;
+      process.env.SOCKET_REDIS_ADAPTER = 'true';
+
+      // Create a new server without explicit option (should read from env)
+      const adapterHttpServer = createServer();
+      const adapterSocketServer = new SocketServer(adapterHttpServer);
+
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.listen(TEST_PORT + 2, resolve);
+      });
+
+      expect(adapterSocketServer.isRedisAdapterEnabled()).toBe(true);
+
+      // Cleanup
+      process.env.SOCKET_REDIS_ADAPTER = originalEnv;
+      await adapterSocketServer.close();
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.close(() => resolve());
+      });
+
+      // Restore original server for subsequent tests
+      httpServer = createServer();
+      socketServer = new SocketServer(httpServer);
+      await new Promise<void>((resolve) => {
+        httpServer.listen(TEST_PORT, resolve);
+      });
+    });
+
+    it('should accept connections with Redis adapter enabled', async () => {
+      // Close the default server
+      if (clientSocket?.connected) {
+        clientSocket.disconnect();
+      }
+      await socketServer.close();
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+
+      // Create a new server with Redis adapter enabled
+      const adapterHttpServer = createServer();
+      const adapterSocketServer = new SocketServer(adapterHttpServer, { enableRedisAdapter: true });
+
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.listen(TEST_PORT + 3, resolve);
+      });
+
+      // Connect a client
+      const adapterClient = ioc(`http://localhost:${TEST_PORT + 3}`, {
+        transports: ['websocket'],
+      });
+
+      await new Promise<void>((resolve) => {
+        adapterClient.on('connect', () => resolve());
+      });
+
+      expect(adapterClient.connected).toBe(true);
+      expect(adapterSocketServer.getConnectedCount()).toBe(1);
+
+      // Cleanup
+      adapterClient.disconnect();
+      await adapterSocketServer.close();
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.close(() => resolve());
+      });
+
+      // Restore original server for subsequent tests
+      httpServer = createServer();
+      socketServer = new SocketServer(httpServer);
+      await new Promise<void>((resolve) => {
+        httpServer.listen(TEST_PORT, resolve);
+      });
+    });
+
+    it('should have broadcast method available with Redis adapter enabled', async () => {
+      // Close the default server
+      if (clientSocket?.connected) {
+        clientSocket.disconnect();
+      }
+      await socketServer.close();
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+
+      // Create a new server with Redis adapter enabled
+      const adapterHttpServer = createServer();
+      const adapterSocketServer = new SocketServer(adapterHttpServer, { enableRedisAdapter: true });
+
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.listen(TEST_PORT + 4, resolve);
+      });
+
+      // Verify broadcast method is available
+      expect(typeof adapterSocketServer.broadcast).toBe('function');
+      expect(typeof adapterSocketServer.sendToAgent).toBe('function');
+      expect(typeof adapterSocketServer.sendPrivateEvent).toBe('function');
+
+      // Cleanup
+      await adapterSocketServer.close();
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.close(() => resolve());
+      });
+
+      // Restore original server for subsequent tests
+      httpServer = createServer();
+      socketServer = new SocketServer(httpServer);
+      await new Promise<void>((resolve) => {
+        httpServer.listen(TEST_PORT, resolve);
+      });
+    });
+
+    it('should properly close Redis adapter connections on shutdown', async () => {
+      // Close the default server
+      if (clientSocket?.connected) {
+        clientSocket.disconnect();
+      }
+      await socketServer.close();
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+
+      // Create a new server with Redis adapter enabled
+      const adapterHttpServer = createServer();
+      const adapterSocketServer = new SocketServer(adapterHttpServer, { enableRedisAdapter: true });
+
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.listen(TEST_PORT + 5, resolve);
+      });
+
+      expect(adapterSocketServer.isRedisAdapterEnabled()).toBe(true);
+
+      // Close should not throw
+      await expect(adapterSocketServer.close()).resolves.not.toThrow();
+
+      await new Promise<void>((resolve) => {
+        adapterHttpServer.close(() => resolve());
+      });
+
+      // Restore original server for subsequent tests
+      httpServer = createServer();
+      socketServer = new SocketServer(httpServer);
+      await new Promise<void>((resolve) => {
+        httpServer.listen(TEST_PORT, resolve);
+      });
+    });
   });
 
   describe('agent:* private channels', () => {
