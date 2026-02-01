@@ -1,4 +1,4 @@
-import { db, agents, orders, actions } from '@wallstreetsim/db';
+import { db, agents, orders, actions, news } from '@wallstreetsim/db';
 import { eq } from 'drizzle-orm';
 import { AgentActionSchema } from '@wallstreetsim/utils';
 import type { AgentAction } from '@wallstreetsim/types';
@@ -160,7 +160,7 @@ async function processSingleAction(
       return processCancelOrder(agentId, action.orderId, tick);
 
     case 'RUMOR':
-      return processRumor(agentId, action, tick);
+      return processRumor(agentId, agent, action, tick);
 
     case 'MESSAGE':
       return processMessage(agentId, action, tick);
@@ -258,19 +258,40 @@ async function processCancelOrder(
 }
 
 /**
- * Process rumor action
+ * Process rumor action (spread false info about stock)
  */
 async function processRumor(
   agentId: string,
+  agent: typeof agents.$inferSelect,
   action: { type: 'RUMOR'; targetSymbol: string; content: string },
   tick: number
 ): Promise<ActionProcessResult> {
-  // TODO: Implement full rumor mechanics (reputation check, cooldowns, news generation)
+  const { targetSymbol, content } = action;
+
+  const reputationCost = 5;
+  if (agent.reputation < reputationCost) {
+    return { action: 'RUMOR', success: false, message: 'Insufficient reputation' };
+  }
+
+  await db.update(agents)
+    .set({ reputation: agent.reputation - reputationCost })
+    .where(eq(agents.id, agentId));
+
+  await db.insert(news).values({
+    tick,
+    headline: `RUMOR: ${content.substring(0, 100)}`,
+    content,
+    category: 'rumor',
+    symbols: targetSymbol,
+    agentIds: agentId,
+    sentiment: '0',
+  });
+
   return {
     action: 'RUMOR',
     success: true,
     message: 'Rumor spreading...',
-    data: { symbol: action.targetSymbol },
+    data: { symbol: targetSymbol, reputationCost },
   };
 }
 

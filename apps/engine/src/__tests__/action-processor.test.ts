@@ -12,9 +12,10 @@ vi.mock('@wallstreetsim/db', () => ({
     update: vi.fn().mockReturnThis(),
     set: vi.fn().mockReturnThis(),
   },
-  agents: { id: 'id', cash: 'cash', status: 'status' },
+  agents: { id: 'id', cash: 'cash', status: 'status', reputation: 'reputation' },
   orders: { id: 'id', agentId: 'agent_id', status: 'status' },
   actions: {},
+  news: { id: 'id' },
 }));
 
 import { processWebhookActions } from '../services/action-processor';
@@ -650,6 +651,228 @@ describe('Action Processor', () => {
       expect(results[0].results[0].success).toBe(true);
       expect(results[0].results[0].data?.destination).toBe('Monaco');
       expect(db.update).toHaveBeenCalled();
+    });
+
+    it('processes RUMOR action successfully', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'news-123' }]),
+        })),
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'RUMOR', targetSymbol: 'AAPL', content: 'Apple is secretly working on a flying car project!' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].action).toBe('RUMOR');
+      expect(results[0].results[0].success).toBe(true);
+      expect(results[0].results[0].data?.symbol).toBe('AAPL');
+      expect(results[0].results[0].data?.reputationCost).toBe(5);
+      expect(db.update).toHaveBeenCalled();
+      expect(db.insert).toHaveBeenCalled();
+    });
+
+    it('rejects RUMOR action when insufficient reputation', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 2, // Less than required 5
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'RUMOR', targetSymbol: 'GOOG', content: 'Google is being investigated for antitrust violations!' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      const results = await processWebhookActions(webhookResults, 100);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].results[0].action).toBe('RUMOR');
+      expect(results[0].results[0].success).toBe(false);
+      expect(results[0].results[0].message).toBe('Insufficient reputation');
+    });
+
+    it('deducts reputation after spreading rumor', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      const updateSetMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
+      });
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: updateSetMock,
+      }));
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: vi.fn().mockImplementation(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'news-456' }]),
+        })),
+      }));
+
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'RUMOR', targetSymbol: 'TSLA', content: 'Tesla recalls all vehicles due to software bug!' },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      await processWebhookActions(webhookResults, 100);
+
+      expect(updateSetMock).toHaveBeenCalledWith({ reputation: 45 });
+    });
+
+    it('creates news entry with rumor content', async () => {
+      const mockAgent = {
+        id: 'agent-1',
+        name: 'Test Agent',
+        cash: '10000.00',
+        status: 'active',
+        reputation: 50,
+      };
+
+      let selectCallCount = 0;
+      (db.select as Mock).mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation(() => {
+            selectCallCount++;
+            if (selectCallCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        })),
+      }));
+
+      (db.update as Mock).mockImplementation(() => ({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      }));
+
+      const insertValuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'news-789' }]),
+      });
+
+      (db.insert as Mock).mockImplementation(() => ({
+        values: insertValuesMock,
+      }));
+
+      const rumorContent = 'NVIDIA acquiring AMD in secret deal!';
+      const webhookResults: WebhookResult[] = [
+        {
+          agentId: 'agent-1',
+          success: true,
+          statusCode: 200,
+          actions: [
+            { type: 'RUMOR', targetSymbol: 'NVDA', content: rumorContent },
+          ],
+          responseTimeMs: 50,
+        },
+      ];
+
+      await processWebhookActions(webhookResults, 100);
+
+      expect(insertValuesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tick: 100,
+          headline: `RUMOR: ${rumorContent}`,
+          content: rumorContent,
+          category: 'rumor',
+          symbols: 'NVDA',
+          agentIds: 'agent-1',
+          sentiment: '0',
+        })
+      );
     });
 
     it('logs all actions to the actions table', async () => {
