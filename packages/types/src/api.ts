@@ -85,6 +85,7 @@ export type WSMessageType =
   | 'AGENT_UPDATE'
   | 'ALERT'
   | 'ORDER_FILLED'
+  | 'ORDER_UPDATE'
   | 'INVESTIGATION'
   | 'SUBSCRIBE'
   | 'UNSUBSCRIBE'
@@ -92,7 +93,10 @@ export type WSMessageType =
   | 'PING'
   | 'PONG'
   | 'PRICE_UPDATE'
-  | 'LEADERBOARD_UPDATE';
+  | 'LEADERBOARD_UPDATE'
+  | 'PORTFOLIO_UPDATE'
+  | 'PRIVATE_MESSAGE'
+  | 'MARGIN_CALL';
 
 export interface WSMessage {
   type: WSMessageType;
@@ -162,6 +166,67 @@ export interface WSPriceUpdate extends WSMessage {
 export interface WSLeaderboardUpdate extends WSMessage {
   type: 'LEADERBOARD_UPDATE';
   payload: Leaderboard;
+}
+
+// Private channel message types (agent-specific)
+export interface WSOrderUpdate extends WSMessage {
+  type: 'ORDER_UPDATE';
+  payload: {
+    orderId: string;
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    type: 'MARKET' | 'LIMIT' | 'STOP';
+    quantity: number;
+    price?: number;
+    status: string;
+    filledQuantity: number;
+    avgFillPrice?: number;
+    tick: number;
+  };
+}
+
+export interface WSOrderFilled extends WSMessage {
+  type: 'ORDER_FILLED';
+  payload: {
+    orderId: string;
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    quantity: number;
+    price: number;
+    tick: number;
+  };
+}
+
+export interface WSPortfolioUpdate extends WSMessage {
+  type: 'PORTFOLIO_UPDATE';
+  payload: AgentPortfolio;
+}
+
+export interface WSPrivateMessage extends WSMessage {
+  type: 'PRIVATE_MESSAGE';
+  payload: AgentMessage;
+}
+
+export interface WSInvestigation extends WSMessage {
+  type: 'INVESTIGATION';
+  payload: {
+    investigationId: string;
+    status: 'opened' | 'charged' | 'resolved';
+    crimeType: string;
+    message: string;
+    tick: number;
+  };
+}
+
+export interface WSMarginCall extends WSMessage {
+  type: 'MARGIN_CALL';
+  payload: {
+    marginUsed: number;
+    marginLimit: number;
+    portfolioValue: number;
+    message: string;
+    tick: number;
+  };
 }
 
 // Webhook Types (for agent callbacks)
