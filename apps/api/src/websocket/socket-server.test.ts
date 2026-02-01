@@ -548,6 +548,147 @@ describe('SocketServer', () => {
     it('should have sendToAgent method', () => {
       expect(typeof socketServer.sendToAgent).toBe('function');
     });
+
+    it('should broadcast TICK_UPDATE to tick room via broadcast method', async () => {
+      const client = await connectClient();
+
+      const tickUpdatePromise = new Promise<{ tick: number; timestamp: string; marketOpen: boolean }>((resolve) => {
+        client.on('TICK_UPDATE', resolve);
+      });
+
+      // Client auto-joins 'tick' room on connect
+      // Use the broadcast method to send a tick update
+      const tickUpdate = {
+        tick: 42,
+        timestamp: new Date().toISOString(),
+        marketOpen: true,
+        regime: 'normal',
+        priceUpdates: [],
+        trades: [],
+        events: [],
+        news: [],
+      };
+
+      socketServer.broadcast('tick', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tickUpdatePromise;
+      expect(received.tick).toBe(42);
+      expect(received.marketOpen).toBe(true);
+    });
+
+    it('should broadcast TICK_UPDATE to tick_updates room via broadcast method', async () => {
+      const client = await connectClient();
+
+      const tickUpdatePromise = new Promise<{ tick: number; timestamp: string; marketOpen: boolean }>((resolve) => {
+        client.on('TICK_UPDATE', resolve);
+      });
+
+      // Client auto-joins 'tick_updates' room on connect
+      const tickUpdate = {
+        tick: 100,
+        timestamp: new Date().toISOString(),
+        marketOpen: false,
+        regime: 'normal',
+        priceUpdates: [],
+        trades: [],
+        events: [],
+        news: [],
+      };
+
+      socketServer.broadcast('tick_updates', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tickUpdatePromise;
+      expect(received.tick).toBe(100);
+      expect(received.marketOpen).toBe(false);
+    });
+
+    it('should broadcast tick updates every second when engine is running (simulation)', async () => {
+      const client = await connectClient();
+
+      const tickUpdates: { tick: number }[] = [];
+      const tickCount = 3;
+
+      const collectTicks = new Promise<void>((resolve) => {
+        client.on('TICK_UPDATE', (data: { tick: number }) => {
+          tickUpdates.push(data);
+          if (tickUpdates.length >= tickCount) {
+            resolve();
+          }
+        });
+      });
+
+      // Simulate engine running - broadcast tick updates at 1-second intervals
+      const intervalId = setInterval(() => {
+        const tickUpdate = {
+          tick: tickUpdates.length + 1,
+          timestamp: new Date().toISOString(),
+          marketOpen: true,
+          regime: 'normal',
+          priceUpdates: [],
+          trades: [],
+          events: [],
+          news: [],
+        };
+        socketServer.broadcast('tick', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+      }, 100); // Use 100ms for test speed
+
+      await collectTicks;
+      clearInterval(intervalId);
+
+      expect(tickUpdates.length).toBeGreaterThanOrEqual(tickCount);
+      expect(tickUpdates[0].tick).toBe(1);
+      expect(tickUpdates[1].tick).toBe(2);
+      expect(tickUpdates[2].tick).toBe(3);
+    });
+
+    it('should broadcast to multiple clients in tick room', async () => {
+      const client1 = await connectClient();
+      const client2Socket = ioc(`http://localhost:${TEST_PORT}`, {
+        transports: ['websocket'],
+      });
+      await new Promise<void>((resolve) => {
+        client2Socket.on('connect', () => resolve());
+      });
+
+      const client1Updates: { tick: number }[] = [];
+      const client2Updates: { tick: number }[] = [];
+
+      const client1Promise = new Promise<void>((resolve) => {
+        client1.on('TICK_UPDATE', (data: { tick: number }) => {
+          client1Updates.push(data);
+          if (client1Updates.length >= 1) resolve();
+        });
+      });
+
+      const client2Promise = new Promise<void>((resolve) => {
+        client2Socket.on('TICK_UPDATE', (data: { tick: number }) => {
+          client2Updates.push(data);
+          if (client2Updates.length >= 1) resolve();
+        });
+      });
+
+      const tickUpdate = {
+        tick: 999,
+        timestamp: new Date().toISOString(),
+        marketOpen: true,
+        regime: 'normal',
+        priceUpdates: [],
+        trades: [],
+        events: [],
+        news: [],
+      };
+
+      socketServer.broadcast('tick', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await Promise.all([client1Promise, client2Promise]);
+
+      expect(client1Updates.length).toBe(1);
+      expect(client1Updates[0].tick).toBe(999);
+      expect(client2Updates.length).toBe(1);
+      expect(client2Updates[0].tick).toBe(999);
+
+      client2Socket.disconnect();
+    });
   });
 
   describe('Socket.io server instance', () => {
