@@ -2,7 +2,13 @@ import { db, agents, holdings, orders } from '@wallstreetsim/db';
 import { eq, and, isNotNull, inArray } from 'drizzle-orm';
 import type { TickWebhook, AgentAction, Order } from '@wallstreetsim/types';
 import type { PriceUpdate, Trade, MarketEvent, NewsArticle, WorldState } from '@wallstreetsim/types';
-import { signWebhookPayload } from '@wallstreetsim/utils';
+import {
+  signWebhookPayload,
+  retryWithBackoff,
+  isRetryableStatusCode,
+  RETRY_PROFILES,
+} from '@wallstreetsim/utils';
+import type { RetryResult } from '@wallstreetsim/utils';
 import * as dbService from './db';
 
 interface AgentWithCallback {
@@ -22,6 +28,7 @@ interface WebhookResult {
   actions?: AgentAction[];
   error?: string;
   responseTimeMs: number;
+  attempts?: number;
 }
 
 interface WebhookDispatcherConfig {
@@ -32,7 +39,7 @@ interface WebhookDispatcherConfig {
 
 const DEFAULT_CONFIG: WebhookDispatcherConfig = {
   timeoutMs: 5000,
-  maxRetries: 0,
+  maxRetries: 3,
   retryDelayMs: 1000,
 };
 
@@ -185,33 +192,33 @@ export async function buildWebhookPayload(
 }
 
 /**
- * Send webhook to a single agent
+ * Error class for webhook failures that includes HTTP status code
  */
-async function sendWebhook(
+class WebhookError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+    public readonly isTimeout: boolean = false
+  ) {
+    super(message);
+    this.name = 'WebhookError';
+  }
+}
+
+/**
+ * Perform a single webhook attempt
+ */
+async function attemptWebhook(
   agent: AgentWithCallback,
   payload: TickWebhook,
-  config: WebhookDispatcherConfig
-): Promise<WebhookResult> {
-  const startTime = Date.now();
+  body: string,
+  headers: Record<string, string>,
+  timeoutMs: number
+): Promise<{ statusCode: number; actions?: AgentAction[] }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
-
-    const body = JSON.stringify(payload);
-
-    // Build headers
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'X-WallStreetSim-Tick': payload.tick.toString(),
-      'X-WallStreetSim-Agent': agent.id,
-    };
-
-    // Add HMAC signature if agent has a webhook secret
-    if (agent.webhookSecret) {
-      headers['X-WallStreetSim-Signature'] = signWebhookPayload(body, agent.webhookSecret);
-    }
-
     const response = await fetch(agent.callbackUrl, {
       method: 'POST',
       headers,
@@ -221,16 +228,11 @@ async function sendWebhook(
 
     clearTimeout(timeoutId);
 
-    const responseTimeMs = Date.now() - startTime;
-
     if (!response.ok) {
-      return {
-        agentId: agent.id,
-        success: false,
-        statusCode: response.status,
-        error: `HTTP ${response.status}: ${response.statusText}`,
-        responseTimeMs,
-      };
+      throw new WebhookError(
+        `HTTP ${response.status}: ${response.statusText}`,
+        response.status
+      );
     }
 
     // Parse response for actions
@@ -244,24 +246,117 @@ async function sendWebhook(
       // Response may not have a body or may not be JSON
     }
 
+    return { statusCode: response.status, actions };
+  } catch (error) {
+    clearTimeout(timeoutId);
+
+    if (error instanceof WebhookError) {
+      throw error;
+    }
+
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const isTimeout = errorMessage.includes('aborted') || errorMessage.includes('abort');
+
+    throw new WebhookError(
+      isTimeout ? 'Timeout' : errorMessage,
+      undefined,
+      isTimeout
+    );
+  }
+}
+
+/**
+ * Determine if a webhook error should be retried
+ */
+function shouldRetryWebhook(error: unknown): boolean {
+  if (error instanceof WebhookError) {
+    // Always retry timeouts
+    if (error.isTimeout) {
+      return true;
+    }
+
+    // Retry on retryable status codes (429, 5xx)
+    if (error.statusCode !== undefined) {
+      return isRetryableStatusCode(error.statusCode);
+    }
+
+    // Retry on network errors (no status code means connection failed)
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Send webhook to a single agent with retry logic
+ */
+async function sendWebhook(
+  agent: AgentWithCallback,
+  payload: TickWebhook,
+  config: WebhookDispatcherConfig
+): Promise<WebhookResult> {
+  const startTime = Date.now();
+  const body = JSON.stringify(payload);
+
+  // Build headers
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-WallStreetSim-Tick': payload.tick.toString(),
+    'X-WallStreetSim-Agent': agent.id,
+  };
+
+  // Add HMAC signature if agent has a webhook secret
+  if (agent.webhookSecret) {
+    headers['X-WallStreetSim-Signature'] = signWebhookPayload(body, agent.webhookSecret);
+  }
+
+  // Use retry logic with exponential backoff
+  const retryResult: RetryResult<{ statusCode: number; actions?: AgentAction[] }> = await retryWithBackoff(
+    () => attemptWebhook(agent, payload, body, headers, config.timeoutMs),
+    {
+      ...RETRY_PROFILES.WEBHOOK,
+      maxRetries: config.maxRetries,
+      shouldRetry: shouldRetryWebhook,
+      onRetry: (error, attempt, delayMs) => {
+        const errorMsg = error instanceof WebhookError ? error.message : 'Unknown error';
+        console.log(`  Webhook retry ${attempt}/${config.maxRetries} for agent ${agent.id} after ${delayMs}ms (${errorMsg})`);
+      },
+    }
+  );
+
+  const responseTimeMs = Date.now() - startTime;
+
+  if (retryResult.success && retryResult.data) {
     return {
       agentId: agent.id,
       success: true,
-      statusCode: response.status,
-      actions,
+      statusCode: retryResult.data.statusCode,
+      actions: retryResult.data.actions,
       responseTimeMs,
-    };
-  } catch (error) {
-    const responseTimeMs = Date.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-    return {
-      agentId: agent.id,
-      success: false,
-      error: errorMessage.includes('aborted') ? 'Timeout' : errorMessage,
-      responseTimeMs,
+      attempts: retryResult.attempts,
     };
   }
+
+  // Extract error details from the last error
+  const lastError = retryResult.error;
+  let errorMessage = 'Unknown error';
+  let statusCode: number | undefined;
+
+  if (lastError instanceof WebhookError) {
+    errorMessage = lastError.message;
+    statusCode = lastError.statusCode;
+  } else if (lastError instanceof Error) {
+    errorMessage = lastError.message;
+  }
+
+  return {
+    agentId: agent.id,
+    success: false,
+    statusCode,
+    error: errorMessage,
+    responseTimeMs,
+    attempts: retryResult.attempts,
+  };
 }
 
 /**
@@ -323,9 +418,11 @@ export async function dispatchWebhooks(
   // Log results
   const successful = results.filter(r => r.success).length;
   const failed = results.filter(r => !r.success).length;
+  const retriedCount = results.filter(r => (r.attempts ?? 1) > 1).length;
 
   if (results.length > 0) {
-    console.log(`  Webhooks: ${successful} delivered, ${failed} failed`);
+    const retryInfo = retriedCount > 0 ? ` (${retriedCount} required retries)` : '';
+    console.log(`  Webhooks: ${successful} delivered, ${failed} failed${retryInfo}`);
   }
 
   return results;

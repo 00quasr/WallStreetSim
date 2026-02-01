@@ -1135,7 +1135,7 @@ describe('Webhook Dispatcher', () => {
         }),
       });
 
-      // Agent 1 succeeds, Agent 2 fails
+      // Agent 1 succeeds, Agent 2 fails with non-retryable 400 error
       mockFetch
         .mockResolvedValueOnce({
           ok: true,
@@ -1144,15 +1144,462 @@ describe('Webhook Dispatcher', () => {
         })
         .mockResolvedValueOnce({
           ok: false,
-          status: 503,
-          statusText: 'Service Unavailable',
+          status: 400,
+          statusText: 'Bad Request',
           json: () => Promise.resolve({}),
         });
 
       await dispatchWebhooks(100, mockWorldState, mockPriceUpdates, [], [], []);
 
       expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1');
-      expect(dbService.recordWebhookFailure).toHaveBeenCalledWith('agent-2', 'HTTP 503: Service Unavailable');
+      expect(dbService.recordWebhookFailure).toHaveBeenCalledWith('agent-2', 'HTTP 400: Bad Request');
+    });
+  });
+
+  describe('webhook retry logic', () => {
+    const mockWorldState: WorldState = {
+      currentTick: 100,
+      marketOpen: true,
+      interestRate: 0.05,
+      inflationRate: 0.02,
+      gdpGrowth: 0.03,
+      regime: 'normal',
+      lastTickAt: new Date(),
+    };
+
+    const mockPriceUpdates: PriceUpdate[] = [
+      {
+        symbol: 'AAPL',
+        oldPrice: 149.00,
+        newPrice: 150.50,
+        change: 1.50,
+        changePercent: 1.007,
+        volume: 10000,
+        tick: 100,
+        drivers: {
+          agentPressure: 0,
+          randomWalk: 0.01,
+          sectorCorrelation: 0,
+          eventImpact: 0,
+        },
+      },
+    ];
+
+    const mockAgent = {
+      id: 'agent-1',
+      name: 'Agent One',
+      callbackUrl: 'https://agent1.example.com/webhook',
+      webhookSecret: 'secret1',
+      cash: '10000.00',
+      marginUsed: '0.00',
+      marginLimit: '50000.00',
+    };
+
+    beforeEach(() => {
+      let callCount = 0;
+      (db.select as Mock).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => {
+            callCount++;
+            if (callCount === 1) {
+              return Promise.resolve([mockAgent]);
+            }
+            return Promise.resolve([]);
+          }),
+        }),
+      });
+    });
+
+    it('retries failed webhook up to 3 times on server error (5xx)', async () => {
+      // Fail 3 times with 500 error, then succeed
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          statusText: 'Internal Server Error',
+          json: () => Promise.resolve({}),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          json: () => Promise.resolve({}),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 502,
+          statusText: 'Bad Gateway',
+          json: () => Promise.resolve({}),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
+        });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(true);
+      expect(results[0].attempts).toBe(4); // 1 initial + 3 retries
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('retries on rate limiting (429) and eventually succeeds', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          statusText: 'Too Many Requests',
+          json: () => Promise.resolve({}),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
+        });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(true);
+      expect(results[0].attempts).toBe(2);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries on timeout and eventually succeeds', async () => {
+      mockFetch
+        .mockRejectedValueOnce(new Error('aborted'))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
+        });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(true);
+      expect(results[0].attempts).toBe(2);
+    });
+
+    it('retries on network errors and eventually succeeds', async () => {
+      mockFetch
+        .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+        .mockRejectedValueOnce(new Error('ETIMEDOUT'))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
+        });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(true);
+      expect(results[0].attempts).toBe(3);
+    });
+
+    it('fails after exhausting all retries', async () => {
+      // All 4 attempts fail with 500 error
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({}),
+      });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(false);
+      expect(results[0].attempts).toBe(4); // 1 initial + 3 retries
+      expect(results[0].error).toContain('500');
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('does not retry on 4xx client errors (except 429)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: () => Promise.resolve({}),
+      });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(false);
+      expect(results[0].attempts).toBe(1); // No retries for 4xx
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry on 401 unauthorized', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        json: () => Promise.resolve({}),
+      });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(false);
+      expect(results[0].attempts).toBe(1);
+    });
+
+    it('does not retry on 404 not found', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        json: () => Promise.resolve({}),
+      });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(false);
+      expect(results[0].attempts).toBe(1);
+    });
+
+    it('includes attempts count in successful result', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].attempts).toBe(1);
+    });
+
+    it('records success only after successful retry', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          statusText: 'Internal Server Error',
+          json: () => Promise.resolve({}),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({}),
+        });
+
+      await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(dbService.recordWebhookSuccess).toHaveBeenCalledWith('agent-1');
+      expect(dbService.recordWebhookFailure).not.toHaveBeenCalled();
+    });
+
+    it('records failure only after all retries exhausted', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({}),
+      });
+
+      await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(dbService.recordWebhookFailure).toHaveBeenCalledWith('agent-1', 'HTTP 500: Internal Server Error');
+      expect(dbService.recordWebhookSuccess).not.toHaveBeenCalled();
+    });
+
+    it('respects maxRetries config override', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({}),
+      });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 1 } // Only 1 retry
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].attempts).toBe(2); // 1 initial + 1 retry
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('can disable retries by setting maxRetries to 0', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({}),
+      });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 0 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].attempts).toBe(1);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves actions from successful retry response', async () => {
+      const mockActions = [
+        { type: 'BUY', payload: { symbol: 'AAPL', quantity: 100 } },
+      ];
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          statusText: 'Internal Server Error',
+          json: () => Promise.resolve({}),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ actions: mockActions }),
+        });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        [],
+        { maxRetries: 3 }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].success).toBe(true);
+      expect(results[0].actions).toHaveLength(1);
+      expect(results[0].actions![0].type).toBe('BUY');
+    });
+
+    it('uses default maxRetries of 3 when not specified', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({}),
+      });
+
+      const results = await dispatchWebhooks(
+        100,
+        mockWorldState,
+        mockPriceUpdates,
+        [],
+        [],
+        []
+        // No config override - should use default maxRetries: 3
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].attempts).toBe(4); // 1 initial + 3 retries (default)
+      expect(mockFetch).toHaveBeenCalledTimes(4);
     });
   });
 });
