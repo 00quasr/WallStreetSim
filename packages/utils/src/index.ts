@@ -227,3 +227,33 @@ export {
 } from './request-context';
 
 export type { RequestContext } from './request-context';
+
+// Secrets management
+export {
+  getSecretsManager,
+  initializeSecrets,
+  getSecret,
+  getOptionalSecret,
+  hasSecret,
+  resetSecretsManager,
+  redactSecrets,
+  redactValue,
+  containsSecret,
+  redactObject,
+  isAINewsEnabled,
+  isClickHouseEnabled,
+  isFinnhubEnabled,
+  isAlpacaEnabled,
+  getFeatureAvailability,
+  SECRET_KEYS,
+  RequiredSecretsSchema,
+  OptionalSecretsSchema,
+  SecretsSchema,
+} from './secrets';
+
+export type {
+  RequiredSecrets,
+  OptionalSecrets,
+  Secrets,
+  SecretKey,
+} from './secrets';
