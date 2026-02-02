@@ -3581,4 +3581,645 @@ it('should publish callback confirmation on reconnection', async () => {
       expect(regularNews?.payload.isBreaking).toBe(false);
     });
   });
+
+  describe('Redis leaderboard event emission', () => {
+    it('should emit LEADERBOARD_UPDATE to clients subscribed to leaderboard channel', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const leaderboardUpdatePromise = new Promise<{
+        type: string;
+        payload: {
+          timestamp: string;
+          entries: {
+            rank: number;
+            agentId: string;
+            name: string;
+            role: string;
+            netWorth: number;
+            change24h: number;
+            status: string;
+          }[];
+        };
+        timestamp: string;
+      }>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', resolve);
+      });
+
+      // Simulate leaderboard update broadcast (as if received from Redis)
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [
+            {
+              rank: 1,
+              agentId: 'agent-1',
+              name: 'Alpha Fund',
+              role: 'hedge_fund_manager',
+              netWorth: 1500000,
+              change24h: 75000,
+              status: 'active',
+            },
+            {
+              rank: 2,
+              agentId: 'agent-2',
+              name: 'Beta Trader',
+              role: 'retail_trader',
+              netWorth: 1200000,
+              change24h: -25000,
+              status: 'active',
+            },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await leaderboardUpdatePromise;
+      expect(received.type).toBe('LEADERBOARD_UPDATE');
+      expect(received.payload.entries).toHaveLength(2);
+      expect(received.payload.entries[0].rank).toBe(1);
+      expect(received.payload.entries[0].agentId).toBe('agent-1');
+      expect(received.payload.entries[0].name).toBe('Alpha Fund');
+      expect(received.payload.entries[0].role).toBe('hedge_fund_manager');
+      expect(received.payload.entries[0].netWorth).toBe(1500000);
+      expect(received.payload.entries[0].change24h).toBe(75000);
+      expect(received.payload.entries[0].status).toBe('active');
+    });
+
+    it('should include all LeaderboardEntry fields in LEADERBOARD_UPDATE payload', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const leaderboardUpdatePromise = new Promise<{
+        payload: {
+          timestamp: string;
+          entries: {
+            rank: number;
+            agentId: string;
+            name: string;
+            role: string;
+            netWorth: number;
+            change24h: number;
+            status: string;
+          }[];
+        };
+      }>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', resolve);
+      });
+
+      // Simulate leaderboard update with all fields
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [
+            {
+              rank: 1,
+              agentId: 'agent-top',
+              name: 'Top Performer',
+              role: 'quant',
+              netWorth: 5000000,
+              change24h: 250000,
+              status: 'active',
+            },
+            {
+              rank: 2,
+              agentId: 'agent-second',
+              name: 'Silver Streak',
+              role: 'investment_banker',
+              netWorth: 3500000,
+              change24h: 100000,
+              status: 'active',
+            },
+            {
+              rank: 3,
+              agentId: 'agent-third',
+              name: 'Bronze Bull',
+              role: 'ceo',
+              netWorth: 2000000,
+              change24h: -50000,
+              status: 'imprisoned',
+            },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await leaderboardUpdatePromise;
+      expect(received.payload.entries).toHaveLength(3);
+
+      // Verify all fields are present and correct for each entry
+      for (let i = 0; i < received.payload.entries.length; i++) {
+        const entry = received.payload.entries[i];
+        expect(entry).toHaveProperty('rank');
+        expect(entry).toHaveProperty('agentId');
+        expect(entry).toHaveProperty('name');
+        expect(entry).toHaveProperty('role');
+        expect(entry).toHaveProperty('netWorth');
+        expect(entry).toHaveProperty('change24h');
+        expect(entry).toHaveProperty('status');
+        expect(entry.rank).toBe(i + 1);
+      }
+    });
+
+    it('should emit LEADERBOARD_UPDATE to multiple clients subscribed to leaderboard channel', async () => {
+      // Connect first client
+      const client1 = await connectClient();
+
+      // Subscribe client1 to leaderboard
+      await new Promise<void>((resolve) => {
+        client1.on('SUBSCRIBED', () => resolve());
+        client1.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+      client1.removeAllListeners('SUBSCRIBED');
+
+      // Connect second client
+      const secondClientConnect = new Promise<ClientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await secondClientConnect;
+
+      // Subscribe client2 to leaderboard
+      await new Promise<void>((resolve) => {
+        client2.on('SUBSCRIBED', () => resolve());
+        client2.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+      client2.removeAllListeners('SUBSCRIBED');
+
+      const client1Received: { entries: { agentId: string }[] }[] = [];
+      const client2Received: { entries: { agentId: string }[] }[] = [];
+
+      const client1RecvPromise = new Promise<void>((resolve) => {
+        client1.on('LEADERBOARD_UPDATE', (data: { payload: { entries: { agentId: string }[] } }) => {
+          client1Received.push(data.payload);
+          resolve();
+        });
+      });
+
+      const client2RecvPromise = new Promise<void>((resolve) => {
+        client2.on('LEADERBOARD_UPDATE', (data: { payload: { entries: { agentId: string }[] } }) => {
+          client2Received.push(data.payload);
+          resolve();
+        });
+      });
+
+      // Broadcast leaderboard update
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [
+            {
+              rank: 1,
+              agentId: 'multi-test-agent',
+              name: 'Multi Client Test',
+              role: 'hedge_fund_manager',
+              netWorth: 1000000,
+              change24h: 50000,
+              status: 'active',
+            },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await Promise.all([client1RecvPromise, client2RecvPromise]);
+
+      // Both clients should receive the leaderboard update
+      expect(client1Received).toHaveLength(1);
+      expect(client2Received).toHaveLength(1);
+      expect(client1Received[0].entries[0].agentId).toBe('multi-test-agent');
+      expect(client2Received[0].entries[0].agentId).toBe('multi-test-agent');
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should not emit LEADERBOARD_UPDATE to clients not subscribed to leaderboard channel', async () => {
+      const client = await connectClient();
+
+      // Subscribe only to prices (not leaderboard)
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      let leaderboardReceived = false;
+      client.on('LEADERBOARD_UPDATE', () => {
+        leaderboardReceived = true;
+      });
+
+      // Broadcast leaderboard update
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [
+            {
+              rank: 1,
+              agentId: 'unsub-test',
+              name: 'Unsubscribed Test',
+              role: 'retail_trader',
+              netWorth: 500000,
+              change24h: 10000,
+              status: 'active',
+            },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Wait for potential message
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(leaderboardReceived).toBe(false);
+    });
+
+    it('should handle leaderboard with various agent statuses', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const leaderboardUpdatePromise = new Promise<{
+        payload: {
+          entries: { status: string }[];
+        };
+      }>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', resolve);
+      });
+
+      // Simulate leaderboard with different agent statuses
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [
+            {
+              rank: 1,
+              agentId: 'active-agent',
+              name: 'Active Trader',
+              role: 'hedge_fund_manager',
+              netWorth: 2000000,
+              change24h: 100000,
+              status: 'active',
+            },
+            {
+              rank: 2,
+              agentId: 'imprisoned-agent',
+              name: 'Convicted Felon',
+              role: 'ceo',
+              netWorth: 500000,
+              change24h: 0,
+              status: 'imprisoned',
+            },
+            {
+              rank: 3,
+              agentId: 'bankrupt-agent',
+              name: 'Broke Trader',
+              role: 'retail_trader',
+              netWorth: 0,
+              change24h: -1000000,
+              status: 'bankrupt',
+            },
+            {
+              rank: 4,
+              agentId: 'fled-agent',
+              name: 'On The Run',
+              role: 'investment_banker',
+              netWorth: 10000000,
+              change24h: 0,
+              status: 'fled',
+            },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await leaderboardUpdatePromise;
+      expect(received.payload.entries).toHaveLength(4);
+
+      const statuses = received.payload.entries.map(e => e.status);
+      expect(statuses).toContain('active');
+      expect(statuses).toContain('imprisoned');
+      expect(statuses).toContain('bankrupt');
+      expect(statuses).toContain('fled');
+    });
+
+    it('should handle leaderboard with various agent roles', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const leaderboardUpdatePromise = new Promise<{
+        payload: {
+          entries: { role: string }[];
+        };
+      }>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', resolve);
+      });
+
+      // Simulate leaderboard with different agent roles
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [
+            { rank: 1, agentId: 'a1', name: 'Fund Manager', role: 'hedge_fund_manager', netWorth: 5000000, change24h: 100000, status: 'active' },
+            { rank: 2, agentId: 'a2', name: 'Retail Joe', role: 'retail_trader', netWorth: 100000, change24h: 5000, status: 'active' },
+            { rank: 3, agentId: 'a3', name: 'CEO Boss', role: 'ceo', netWorth: 10000000, change24h: 0, status: 'active' },
+            { rank: 4, agentId: 'a4', name: 'Banker Bob', role: 'investment_banker', netWorth: 3000000, change24h: 50000, status: 'active' },
+            { rank: 5, agentId: 'a5', name: 'Reporter Ray', role: 'financial_journalist', netWorth: 200000, change24h: 10000, status: 'active' },
+            { rank: 6, agentId: 'a6', name: 'SEC Sam', role: 'sec_investigator', netWorth: 150000, change24h: 5000, status: 'active' },
+            { rank: 7, agentId: 'a7', name: 'Whistle Will', role: 'whistleblower', netWorth: 500000, change24h: 250000, status: 'active' },
+            { rank: 8, agentId: 'a8', name: 'Quant Queen', role: 'quant', netWorth: 8000000, change24h: 200000, status: 'active' },
+            { rank: 9, agentId: 'a9', name: 'Influencer Ian', role: 'influencer', netWorth: 1000000, change24h: 75000, status: 'active' },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await leaderboardUpdatePromise;
+      expect(received.payload.entries).toHaveLength(9);
+
+      const roles = received.payload.entries.map(e => e.role);
+      expect(roles).toContain('hedge_fund_manager');
+      expect(roles).toContain('retail_trader');
+      expect(roles).toContain('ceo');
+      expect(roles).toContain('investment_banker');
+      expect(roles).toContain('financial_journalist');
+      expect(roles).toContain('sec_investigator');
+      expect(roles).toContain('whistleblower');
+      expect(roles).toContain('quant');
+      expect(roles).toContain('influencer');
+    });
+
+    it('should handle leaderboard with positive and negative change24h values', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const leaderboardUpdatePromise = new Promise<{
+        payload: {
+          entries: { agentId: string; change24h: number }[];
+        };
+      }>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', resolve);
+      });
+
+      // Simulate leaderboard with positive and negative changes
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [
+            { rank: 1, agentId: 'winner', name: 'Big Winner', role: 'hedge_fund_manager', netWorth: 2000000, change24h: 500000, status: 'active' },
+            { rank: 2, agentId: 'loser', name: 'Big Loser', role: 'retail_trader', netWorth: 500000, change24h: -250000, status: 'active' },
+            { rank: 3, agentId: 'steady', name: 'No Change', role: 'ceo', netWorth: 1000000, change24h: 0, status: 'active' },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await leaderboardUpdatePromise;
+      expect(received.payload.entries).toHaveLength(3);
+
+      const winner = received.payload.entries.find(e => e.agentId === 'winner');
+      const loser = received.payload.entries.find(e => e.agentId === 'loser');
+      const steady = received.payload.entries.find(e => e.agentId === 'steady');
+
+      expect(winner?.change24h).toBe(500000);
+      expect(loser?.change24h).toBe(-250000);
+      expect(steady?.change24h).toBe(0);
+    });
+
+    it('should handle empty leaderboard', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const leaderboardUpdatePromise = new Promise<{
+        payload: {
+          entries: unknown[];
+        };
+      }>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', resolve);
+      });
+
+      // Simulate empty leaderboard
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await leaderboardUpdatePromise;
+      expect(received.payload.entries).toHaveLength(0);
+    });
+
+    it('should broadcast multiple leaderboard updates over time', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const receivedUpdates: { payload: { entries: { netWorth: number }[] } }[] = [];
+      const receiveThree = new Promise<void>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', (data: { payload: { entries: { netWorth: number }[] } }) => {
+          receivedUpdates.push(data);
+          if (receivedUpdates.length >= 3) resolve();
+        });
+      });
+
+      // Broadcast multiple leaderboard updates simulating time passing
+      for (let i = 1; i <= 3; i++) {
+        const leaderboardUpdate = {
+          type: 'LEADERBOARD_UPDATE',
+          payload: {
+            timestamp: new Date().toISOString(),
+            entries: [
+              {
+                rank: 1,
+                agentId: 'agent-1',
+                name: 'Growing Fund',
+                role: 'hedge_fund_manager',
+                netWorth: 1000000 + (i * 100000), // Net worth grows over time
+                change24h: 100000 * i,
+                status: 'active',
+              },
+            ],
+          },
+          timestamp: new Date().toISOString(),
+        };
+
+        socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+      }
+
+      await receiveThree;
+
+      expect(receivedUpdates).toHaveLength(3);
+      expect(receivedUpdates[0].payload.entries[0].netWorth).toBe(1100000);
+      expect(receivedUpdates[1].payload.entries[0].netWorth).toBe(1200000);
+      expect(receivedUpdates[2].payload.entries[0].netWorth).toBe(1300000);
+    });
+
+    it('should handle leaderboard with large number of entries', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const leaderboardUpdatePromise = new Promise<{
+        payload: {
+          entries: { rank: number; agentId: string }[];
+        };
+      }>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', resolve);
+      });
+
+      // Simulate large leaderboard (e.g., top 50 agents)
+      const entries = Array.from({ length: 50 }, (_, i) => ({
+        rank: i + 1,
+        agentId: `agent-${i + 1}`,
+        name: `Agent ${i + 1}`,
+        role: 'hedge_fund_manager',
+        netWorth: 10000000 - (i * 100000),
+        change24h: Math.random() > 0.5 ? 50000 : -25000,
+        status: 'active',
+      }));
+
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries,
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await leaderboardUpdatePromise;
+      expect(received.payload.entries).toHaveLength(50);
+      expect(received.payload.entries[0].rank).toBe(1);
+      expect(received.payload.entries[49].rank).toBe(50);
+    });
+
+    it('should emit LEADERBOARD_UPDATE with timestamp', async () => {
+      const client = await connectClient();
+
+      // Subscribe to leaderboard channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['leaderboard'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const leaderboardUpdatePromise = new Promise<{
+        type: string;
+        timestamp: string;
+      }>((resolve) => {
+        client.on('LEADERBOARD_UPDATE', resolve);
+      });
+
+      const broadcastTimestamp = new Date().toISOString();
+      const leaderboardUpdate = {
+        type: 'LEADERBOARD_UPDATE',
+        payload: {
+          timestamp: new Date().toISOString(),
+          entries: [
+            {
+              rank: 1,
+              agentId: 'timestamp-test',
+              name: 'Timestamp Test Agent',
+              role: 'hedge_fund_manager',
+              netWorth: 1000000,
+              change24h: 50000,
+              status: 'active',
+            },
+          ],
+        },
+        timestamp: broadcastTimestamp,
+      };
+
+      socketServer.broadcast('leaderboard', 'LEADERBOARD_UPDATE', leaderboardUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await leaderboardUpdatePromise;
+      expect(received.timestamp).toBe(broadcastTimestamp);
+      expect(new Date(received.timestamp).getTime()).not.toBeNaN();
+    });
+  });
 });
