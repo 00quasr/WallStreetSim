@@ -10,6 +10,14 @@ export type {
   AgentAlert,
 } from './agent';
 
+// Alliance types
+export type {
+  AllianceStatus,
+  Alliance,
+  AllianceMember,
+  AllianceDetails,
+} from './alliance';
+
 // Company types
 export type {
   Sector,
@@ -58,6 +66,10 @@ export type {
   InvestigationStatus,
   InvestigationEvidence,
   OrderProcessedEvent,
+  InvestigationAlert,
+  InvestigationAlertStatus,
+  EngineStatus,
+  EngineHeartbeat,
 } from './events';
 
 // API types
@@ -94,4 +106,10 @@ export type {
   WebhookResponse,
   LeaderboardEntry,
   Leaderboard,
+  AgentHoldingSnapshot,
+  AgentPortfolioCheckpoint,
+  WorldStateCheckpoint,
+  TickEventRecord,
+  RecoveryPayload,
+  PaginatedRecoveryPayload,
 } from './api';

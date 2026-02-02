@@ -16,12 +16,17 @@ export const CHANNELS = {
   TRADES: 'channel:trades',
   AGENT_UPDATES: (agentId: string) => `channel:agent:${agentId}`,
   SYMBOL_UPDATES: (symbol: string) => `channel:market:${symbol}`,
+  /** Channel for agent callback confirmations (WebSocket reconnect -> resume webhooks) */
+  AGENT_CALLBACK_CONFIRMED: 'channel:agent_callback_confirmed',
+  /** Channel for tick engine heartbeat monitoring */
+  ENGINE_HEARTBEAT: 'channel:engine_heartbeat',
 };
 
 // Key patterns
 export const KEYS = {
   TICK_CURRENT: 'tick:current',
   TICK_PENDING_ACTIONS: 'tick:pending_actions',
+  SEQUENCE_COUNTER: 'sequence:global',
   PRICE: (symbol: string) => `price:${symbol}`,
   PRICES_ALL: 'prices:all',
   VOLUME_24H: (symbol: string) => `volume:${symbol}:24h`,
@@ -31,12 +36,49 @@ export const KEYS = {
   RATE_LIMIT: (agentId: string, action: string) => `ratelimit:${agentId}:${action}`,
   LOCK: (resource: string) => `lock:${resource}`,
   LEADERBOARD: 'leaderboard:current',
+  /** Key for storing the latest engine heartbeat */
+  ENGINE_HEARTBEAT: 'engine:heartbeat',
 };
 
 /**
- * Publish a message to a channel
+ * Get the next sequence number (atomic increment)
  */
-export async function publish(channel: string, message: unknown): Promise<void> {
+export async function getNextSequence(): Promise<number> {
+  return await redis.incr(KEYS.SEQUENCE_COUNTER);
+}
+
+/**
+ * Get the current sequence number without incrementing
+ */
+export async function getCurrentSequence(): Promise<number> {
+  const seq = await redis.get(KEYS.SEQUENCE_COUNTER);
+  return seq ? parseInt(seq, 10) : 0;
+}
+
+/**
+ * Reset the sequence counter (for testing or system reset)
+ */
+export async function resetSequence(value: number = 0): Promise<void> {
+  await redis.set(KEYS.SEQUENCE_COUNTER, value.toString());
+}
+
+/**
+ * Publish a message to a channel with automatic sequence number injection
+ */
+export async function publish(channel: string, message: unknown): Promise<number> {
+  const sequence = await getNextSequence();
+  const messageWithSequence = {
+    ...(message as Record<string, unknown>),
+    sequence,
+  };
+  await pubClient.publish(channel, JSON.stringify(messageWithSequence));
+  return sequence;
+}
+
+/**
+ * Publish a message to a channel without sequence number (for internal use)
+ */
+export async function publishRaw(channel: string, message: unknown): Promise<void> {
   await pubClient.publish(channel, JSON.stringify(message));
 }
 
@@ -131,6 +173,49 @@ export async function checkRateLimit(
   const key = KEYS.RATE_LIMIT(agentId, action);
   const count = await redis.get(key);
   return count ? parseInt(count, 10) >= limit : false;
+}
+
+/**
+ * Set engine heartbeat in Redis (with TTL for auto-expiry)
+ * TTL is set to 30 seconds - if heartbeat stops, key expires
+ */
+export async function setEngineHeartbeat(heartbeat: {
+  tick: number;
+  status: string;
+  timestamp: string;
+  marketOpen: boolean;
+  lastTickAt: string;
+  avgTickDurationMs: number;
+  ticksProcessed: number;
+  uptimeMs: number;
+}): Promise<void> {
+  await redis.set(KEYS.ENGINE_HEARTBEAT, JSON.stringify(heartbeat), 'EX', 30);
+}
+
+/**
+ * Get the latest engine heartbeat from Redis
+ * Returns null if no heartbeat exists (engine not running or heartbeat expired)
+ */
+export async function getEngineHeartbeat(): Promise<{
+  tick: number;
+  status: string;
+  timestamp: string;
+  marketOpen: boolean;
+  lastTickAt: string;
+  avgTickDurationMs: number;
+  ticksProcessed: number;
+  uptimeMs: number;
+} | null> {
+  const data = await redis.get(KEYS.ENGINE_HEARTBEAT);
+  if (!data) return null;
+  return JSON.parse(data);
+}
+
+/**
+ * Delete engine heartbeat from Redis (on shutdown)
+ */
+export async function clearEngineHeartbeat(): Promise<void> {
+  await redis.del(KEYS.ENGINE_HEARTBEAT);
 }
 
 /**

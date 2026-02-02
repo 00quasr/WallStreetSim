@@ -17,7 +17,35 @@ export type EventType =
   | 'MEME_PUMP'
   | 'MARKET_CRASH'
   | 'RALLY'
-  | 'RUMOR';
+  | 'RUMOR'
+  // Price movement events
+  | 'FLASH_CRASH'
+  | 'DEAD_CAT_BOUNCE'
+  | 'VOLATILE_SESSION'
+  | 'BULL_RUN'
+  | 'BEAR_RAID'
+  | 'GAP_UP'
+  | 'GAP_DOWN'
+  | 'BREAKOUT'
+  | 'BREAKDOWN'
+  | 'CONSOLIDATION'
+  | 'MOMENTUM_SHIFT'
+  // Company-specific events
+  | 'DIVIDEND_DECLARED'
+  | 'DIVIDEND_CUT'
+  | 'STOCK_BUYBACK'
+  | 'EXECUTIVE_DEPARTURE'
+  | 'EXECUTIVE_HIRED'
+  | 'LAYOFFS'
+  | 'EXPANSION'
+  | 'PARTNERSHIP'
+  | 'CONTRACT_WIN'
+  | 'CONTRACT_LOSS'
+  | 'CREDIT_UPGRADE'
+  | 'CREDIT_DOWNGRADE'
+  | 'RESTRUCTURING'
+  | 'GUIDANCE_RAISED'
+  | 'GUIDANCE_LOWERED';
 
 export interface MarketEvent {
   id: string;
@@ -70,6 +98,8 @@ export interface NewsArticle {
   agentIds: string[];
   symbols: string[];
   createdAt: Date;
+  /** Whether this is breaking news for a major market event */
+  isBreaking?: boolean;
 }
 
 export type NewsCategory =
@@ -81,7 +111,8 @@ export type NewsCategory =
   | 'product'
   | 'analysis'
   | 'crime'
-  | 'rumor';
+  | 'rumor'
+  | 'company';
 
 export interface Investigation {
   id: string;
@@ -100,8 +131,10 @@ export interface Investigation {
 export type CrimeType =
   | 'insider_trading'
   | 'market_manipulation'
+  | 'spoofing'
   | 'wash_trading'
   | 'pump_and_dump'
+  | 'coordination'
   | 'accounting_fraud'
   | 'bribery'
   | 'tax_evasion'
@@ -134,4 +167,47 @@ export interface OrderProcessedEvent {
   filledQuantity: number;
   avgFillPrice?: number;
   tick: number;
+}
+
+/**
+ * Investigation alert event for WebSocket/webhook notifications
+ */
+export type InvestigationAlertStatus = 'opened' | 'activated' | 'charged' | 'trial' | 'convicted' | 'acquitted' | 'settled';
+
+export interface InvestigationAlert {
+  investigationId: string;
+  agentId: string;
+  status: InvestigationAlertStatus;
+  crimeType: CrimeType;
+  message: string;
+  tick: number;
+  fineAmount?: number;
+  sentenceYears?: number;
+}
+
+/**
+ * Heartbeat status for tick engine health monitoring
+ */
+export type EngineStatus = 'running' | 'stopped' | 'error' | 'initializing';
+
+/**
+ * Heartbeat data published by the tick engine for monitoring
+ */
+export interface EngineHeartbeat {
+  /** Current tick number */
+  tick: number;
+  /** Engine status */
+  status: EngineStatus;
+  /** Timestamp of the heartbeat */
+  timestamp: Date;
+  /** Whether market is open */
+  marketOpen: boolean;
+  /** Time of last successful tick completion (ISO string) */
+  lastTickAt: string;
+  /** Average tick processing time in ms (rolling window) */
+  avgTickDurationMs: number;
+  /** Number of ticks processed since start */
+  ticksProcessed: number;
+  /** Time since engine started in ms */
+  uptimeMs: number;
 }
