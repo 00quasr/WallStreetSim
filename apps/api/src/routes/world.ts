@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
-import { db, worldState, agents, companies } from '@wallstreetsim/db';
-import { eq, sql, count } from 'drizzle-orm';
+import { db, worldState, agents, companies, investigations } from '@wallstreetsim/db';
+import { eq, sql, count, inArray, desc } from 'drizzle-orm';
 import Redis from 'ioredis';
 
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
@@ -122,6 +122,100 @@ world.get('/leaderboard', async (c) => {
   return c.json({
     success: true,
     data: leaderboard,
+  });
+});
+
+/**
+ * GET /world/investigations/most-wanted - Get active SEC investigations (Most Wanted)
+ */
+world.get('/investigations/most-wanted', async (c) => {
+  const limit = parseInt(c.req.query('limit') || '10', 10);
+
+  // Get active investigations (open, charged, or trial status) with agent info
+  const rows = await db
+    .select({
+      id: investigations.id,
+      agentId: investigations.agentId,
+      agentName: agents.name,
+      crimeType: investigations.crimeType,
+      status: investigations.status,
+      tickOpened: investigations.tickOpened,
+      tickCharged: investigations.tickCharged,
+      fineAmount: investigations.fineAmount,
+      createdAt: investigations.createdAt,
+    })
+    .from(investigations)
+    .innerJoin(agents, eq(investigations.agentId, agents.id))
+    .where(inArray(investigations.status, ['open', 'charged', 'trial']))
+    .orderBy(desc(investigations.tickOpened))
+    .limit(Math.min(limit, 50));
+
+  const mostWanted = rows.map((row) => ({
+    id: row.id,
+    agentId: row.agentId,
+    agentName: row.agentName,
+    crimeType: row.crimeType,
+    status: row.status,
+    tickOpened: row.tickOpened,
+    tickCharged: row.tickCharged,
+    fineAmount: row.fineAmount ? parseFloat(row.fineAmount) : null,
+    createdAt: row.createdAt,
+  }));
+
+  return c.json({
+    success: true,
+    data: mostWanted,
+  });
+});
+
+/**
+ * GET /world/prison - Get imprisoned agents
+ */
+world.get('/prison', async (c) => {
+  const limit = parseInt(c.req.query('limit') || '10', 10);
+
+  // Get imprisoned agents with conviction details
+  const rows = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      imprisonedUntilTick: agents.imprisonedUntilTick,
+      investigationId: investigations.id,
+      crimeType: investigations.crimeType,
+      sentenceYears: investigations.sentenceYears,
+      fineAmount: investigations.fineAmount,
+      tickResolved: investigations.tickResolved,
+    })
+    .from(agents)
+    .leftJoin(
+      investigations,
+      sql`${investigations.agentId} = ${agents.id} AND ${investigations.status} = 'convicted'`
+    )
+    .where(eq(agents.status, 'imprisoned'))
+    .orderBy(desc(agents.imprisonedUntilTick))
+    .limit(Math.min(limit, 50));
+
+  const prisoners = rows.map((row) => ({
+    agentId: row.id,
+    agentName: row.name,
+    imprisonedUntilTick: row.imprisonedUntilTick,
+    crimeType: row.crimeType,
+    sentenceYears: row.sentenceYears,
+    fineAmount: row.fineAmount ? parseFloat(row.fineAmount) : null,
+  }));
+
+  // Get total count
+  const [countResult] = await db
+    .select({ count: count() })
+    .from(agents)
+    .where(eq(agents.status, 'imprisoned'));
+
+  return c.json({
+    success: true,
+    data: {
+      prisoners,
+      totalCount: Number(countResult?.count || 0),
+    },
   });
 });
 

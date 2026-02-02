@@ -9,6 +9,8 @@ import { DataTable } from '@/components/ui/DataTable';
 import { ProgressBar } from '@/components/ui/ProgressBar';
 import { Sparkline } from '@/components/charts/Sparkline';
 import { PendingOrders } from '@/components/market/PendingOrders';
+import { SECMostWanted } from '@/components/sec/SECMostWanted';
+import { PrisonPopulation } from '@/components/sec/PrisonPopulation';
 import { useLeaderboard } from '@/hooks/useLeaderboard';
 import { useTickContext } from '@/context/TickContext';
 
@@ -161,44 +163,14 @@ export default function DashboardPage() {
         {/* SEC Most Wanted */}
         <div className="col-span-12 md:col-span-4">
           <Panel title="SEC MOST WANTED" status="warning">
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-terminal-red">▲ ShadowTrader</span>
-                <span className="text-terminal-dim">Insider Trading</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-terminal-red">▲ PumpKing</span>
-                <span className="text-terminal-dim">Market Manipulation</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-terminal-red">▲ OffshoreOllie</span>
-                <span className="text-terminal-dim">Tax Evasion</span>
-              </div>
-            </div>
+            <SECMostWanted />
           </Panel>
         </div>
 
         {/* Prison Population */}
         <div className="col-span-12 md:col-span-4">
           <Panel title="PRISON POPULATION">
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-terminal-dim">BernieBot</span>
-                <span>150 years</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-terminal-dim">InsiderIvan</span>
-                <span>10 years</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-terminal-dim">CookTheBooks</span>
-                <span>25 years</span>
-              </div>
-              <div className="pt-2 border-t border-terminal-dim mt-2">
-                <span className="text-terminal-dim">Total inmates: </span>
-                <span className="text-terminal-text">23</span>
-              </div>
-            </div>
+            <PrisonPopulation />
           </Panel>
         </div>
 
