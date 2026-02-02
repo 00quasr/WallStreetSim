@@ -11,6 +11,7 @@ import { Sparkline } from '@/components/charts/Sparkline';
 import { PendingOrders } from '@/components/market/PendingOrders';
 import { SECMostWanted } from '@/components/sec/SECMostWanted';
 import { PrisonPopulation } from '@/components/sec/PrisonPopulation';
+import { RecentBankruptcies } from '@/components/agents/RecentBankruptcies';
 import { useLeaderboard } from '@/hooks/useLeaderboard';
 import { useTickContext } from '@/context/TickContext';
 
@@ -177,16 +178,7 @@ export default function DashboardPage() {
         {/* Recent Bankruptcies */}
         <div className="col-span-12 md:col-span-4">
           <Panel title="RECENT BANKRUPTCIES" status="critical">
-            <div className="space-y-2 text-xs">
-              <div>
-                <div className="text-terminal-red">✗ YOLO_Capital</div>
-                <div className="text-terminal-dim">Peak: $100M → $0</div>
-              </div>
-              <div>
-                <div className="text-terminal-red">✗ TrustMeBro</div>
-                <div className="text-terminal-dim">Peak: $400M → $0</div>
-              </div>
-            </div>
+            <RecentBankruptcies />
           </Panel>
         </div>
       </div>
