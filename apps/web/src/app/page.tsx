@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import { TerminalShell } from '@/components/layout/TerminalShell';
 import { Panel } from '@/components/ui/Panel';
 import { StockTicker } from '@/components/market/StockTicker';
@@ -13,14 +14,38 @@ import { PrisonPopulation } from '@/components/sec/PrisonPopulation';
 import { RecentBankruptcies } from '@/components/agents/RecentBankruptcies';
 import { useLeaderboard } from '@/hooks/useLeaderboard';
 import { useTickContext } from '@/context/TickContext';
+import { useWorldStatus } from '@/hooks/useWorldStatus';
+import { useMarketData } from '@/hooks/useMarketData';
 
 const mockPriceHistory = [
   150, 152, 148, 155, 160, 158, 162, 165, 163, 168, 172, 170, 175, 173, 178, 180, 176, 182, 185, 183,
 ];
 
+function formatMarketCap(value: number): string {
+  if (value >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
+  if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
+  if (value >= 1e3) return `$${(value / 1e3).toFixed(0)}K`;
+  return `$${value.toLocaleString()}`;
+}
+
+function formatVolume(value: number): string {
+  if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
+  if (value >= 1e3) return `$${(value / 1e3).toFixed(0)}K`;
+  return `$${value.toLocaleString()}`;
+}
+
 export default function DashboardPage() {
   const { topAgents, isConnected } = useLeaderboard({ onlyActive: true });
   const { currentTick } = useTickContext();
+  const { worldStatus } = useWorldStatus();
+  const { priceList } = useMarketData({ autoConnect: true });
+
+  // Calculate total volume from market data
+  const totalVolume = useMemo(() => {
+    return priceList.reduce((sum, stock) => sum + stock.volume * stock.price, 0);
+  }, [priceList]);
 
   // Format leaderboard data for the DataTable
   const leaderboardData = topAgents.slice(0, 5).map((entry) => ({
@@ -55,15 +80,21 @@ export default function DashboardPage() {
             <div className="grid grid-cols-3 gap-4 mt-4 pt-4 border-t border-terminal-dim">
               <div>
                 <div className="text-terminal-dim text-xs">MARKET CAP</div>
-                <div className="text-terminal-text">$2.4T</div>
+                <div className="text-terminal-text">
+                  {worldStatus ? formatMarketCap(worldStatus.market.totalMarketCap) : '---'}
+                </div>
               </div>
               <div>
                 <div className="text-terminal-dim text-xs">24H VOLUME</div>
-                <div className="text-terminal-text">$847M</div>
+                <div className="text-terminal-text">
+                  {totalVolume > 0 ? formatVolume(totalVolume) : '---'}
+                </div>
               </div>
               <div>
                 <div className="text-terminal-dim text-xs">ACTIVE AGENTS</div>
-                <div className="text-terminal-highlight">847</div>
+                <div className="text-terminal-highlight">
+                  {worldStatus ? worldStatus.agents.active.toLocaleString() : '---'}
+                </div>
               </div>
             </div>
           </Panel>
@@ -160,8 +191,8 @@ export default function DashboardPage() {
       <div className="mt-4 border border-terminal-dim p-3">
         <pre className="text-xs text-terminal-dim text-center">
 {`┌─────────────────────────────────────────────────────────────────────────────────┐
-│  TICK: ${currentTick.toLocaleString().padEnd(7)}│  TRADES/MIN: 1,247  │  AGENTS: 847  │  MARKET CAP: $2.4T       │
-│  UPTIME: 99.97%│  LATENCY: 12ms      │  IN PRISON: 23│  BANKRUPTCIES: 156       │
+│  TICK: ${currentTick.toLocaleString().padEnd(7)}│  VOLUME: ${(totalVolume > 0 ? formatVolume(totalVolume) : '---').padEnd(10)}│  AGENTS: ${(worldStatus ? worldStatus.agents.active.toLocaleString() : '---').padEnd(5)}│  MARKET CAP: ${(worldStatus ? formatMarketCap(worldStatus.market.totalMarketCap) : '---').padEnd(10)}│
+│  UPTIME: 99.97%│  LATENCY: 12ms      │  IN PRISON: ${(worldStatus ? worldStatus.agents.imprisoned.toString() : '--').padEnd(2)}│  BANKRUPTCIES: ${(worldStatus ? worldStatus.agents.bankrupt.toString() : '---').padEnd(10)}│
 └─────────────────────────────────────────────────────────────────────────────────┘`}
         </pre>
       </div>
