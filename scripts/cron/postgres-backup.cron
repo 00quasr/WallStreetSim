@@ -1,0 +1,13 @@
+# PostgreSQL Daily Backup Cron Job
+# WallStreetSim
+#
+# To install this cron job, run:
+#   crontab -l 2>/dev/null | cat - /WallStreetSim/scripts/cron/postgres-backup.cron | crontab -
+#
+# Or manually add to crontab with: crontab -e
+#
+# To verify installation: crontab -l
+# To view logs: journalctl -u cron | grep backup-postgres
+
+# Run PostgreSQL backup daily at 2:00 AM
+0 2 * * * /WallStreetSim/scripts/backup-postgres.sh >> /var/log/wallstreetsim/backup-postgres.log 2>&1
