@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { WorldStatus } from './WorldStatus';
 import type { UseWorldStatusReturn, WorldStatus as WorldStatusType } from '@/hooks/useWorldStatus';
 import type { MarketRegime, MarketEvent } from '@wallstreetsim/types';
+import type { ActiveEvent } from '@/hooks/useActiveEvents';
 
 // Mock useWorldStatus
 const mockUseWorldStatus = vi.fn();
@@ -14,6 +15,12 @@ vi.mock('@/hooks/useWorldStatus', () => ({
 const mockUseTickContext = vi.fn();
 vi.mock('@/context/TickContext', () => ({
   useTickContext: () => mockUseTickContext(),
+}));
+
+// Mock useActiveEvents
+const mockUseActiveEvents = vi.fn();
+vi.mock('@/hooks/useActiveEvents', () => ({
+  useActiveEvents: () => mockUseActiveEvents(),
 }));
 
 function createMockWorldStatus(overrides?: Partial<WorldStatusType>): WorldStatusType {
@@ -52,7 +59,6 @@ function createMockUseWorldStatusReturn(overrides?: Partial<UseWorldStatusReturn
 
 function createMockTickContext(overrides?: {
   regime?: MarketRegime;
-  events?: MarketEvent[];
 }) {
   return {
     currentTick: 1000,
@@ -61,7 +67,7 @@ function createMockTickContext(overrides?: {
     regime: overrides?.regime || 'normal',
     priceUpdates: [],
     trades: [],
-    events: overrides?.events || [],
+    events: [],
     news: [],
     isConnected: true,
     connectionStatus: 'connected',
@@ -70,11 +76,20 @@ function createMockTickContext(overrides?: {
   };
 }
 
+function createMockActiveEventsReturn(activeEvents: ActiveEvent[] = []) {
+  return {
+    activeEvents,
+    allEvents: activeEvents as MarketEvent[],
+    clearEvents: vi.fn(),
+  };
+}
+
 describe('WorldStatus', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseWorldStatus.mockReturnValue(createMockUseWorldStatusReturn());
     mockUseTickContext.mockReturnValue(createMockTickContext());
+    mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn());
   });
 
   describe('loading state', () => {
@@ -280,15 +295,15 @@ describe('WorldStatus', () => {
 
   describe('active events', () => {
     it('should display "No active events" when events array is empty', () => {
-      mockUseTickContext.mockReturnValue(createMockTickContext({ events: [] }));
+      mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn([]));
 
       render(<WorldStatus />);
 
       expect(screen.getByText('No active events')).toBeInTheDocument();
     });
 
-    it('should display active events from tick context', () => {
-      const events: MarketEvent[] = [
+    it('should display active events from useActiveEvents hook', () => {
+      const events: ActiveEvent[] = [
         {
           id: 'event-1',
           type: 'EARNINGS_BEAT',
@@ -298,18 +313,20 @@ describe('WorldStatus', () => {
           tick: 1000,
           headline: 'APEX beats earnings',
           createdAt: new Date(),
+          remainingDuration: 10,
         },
       ];
-      mockUseTickContext.mockReturnValue(createMockTickContext({ events }));
+      mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn(events));
 
       render(<WorldStatus />);
 
       expect(screen.getByText('EARNINGS_BEAT')).toBeInTheDocument();
+      expect(screen.getByText('(APEX)')).toBeInTheDocument();
       expect(screen.getByText(/10 ticks remaining/)).toBeInTheDocument();
     });
 
     it('should limit display to 3 events', () => {
-      const events: MarketEvent[] = [
+      const events: ActiveEvent[] = [
         {
           id: 'event-1',
           type: 'EARNINGS_BEAT',
@@ -319,6 +336,7 @@ describe('WorldStatus', () => {
           tick: 1000,
           headline: 'Event 1',
           createdAt: new Date(),
+          remainingDuration: 10,
         },
         {
           id: 'event-2',
@@ -329,6 +347,7 @@ describe('WorldStatus', () => {
           tick: 1000,
           headline: 'Event 2',
           createdAt: new Date(),
+          remainingDuration: 20,
         },
         {
           id: 'event-3',
@@ -339,6 +358,7 @@ describe('WorldStatus', () => {
           tick: 1000,
           headline: 'Event 3',
           createdAt: new Date(),
+          remainingDuration: 15,
         },
         {
           id: 'event-4',
@@ -349,9 +369,10 @@ describe('WorldStatus', () => {
           tick: 1000,
           headline: 'Event 4',
           createdAt: new Date(),
+          remainingDuration: 30,
         },
       ];
-      mockUseTickContext.mockReturnValue(createMockTickContext({ events }));
+      mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn(events));
 
       render(<WorldStatus />);
 
@@ -362,7 +383,7 @@ describe('WorldStatus', () => {
     });
 
     it('should display positive events with highlight color', () => {
-      const events: MarketEvent[] = [
+      const events: ActiveEvent[] = [
         {
           id: 'event-1',
           type: 'EARNINGS_BEAT',
@@ -372,9 +393,10 @@ describe('WorldStatus', () => {
           tick: 1000,
           headline: 'Positive event',
           createdAt: new Date(),
+          remainingDuration: 10,
         },
       ];
-      mockUseTickContext.mockReturnValue(createMockTickContext({ events }));
+      mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn(events));
 
       render(<WorldStatus />);
 
@@ -383,7 +405,7 @@ describe('WorldStatus', () => {
     });
 
     it('should display negative events with yellow color', () => {
-      const events: MarketEvent[] = [
+      const events: ActiveEvent[] = [
         {
           id: 'event-1',
           type: 'CEO_SCANDAL',
@@ -393,9 +415,10 @@ describe('WorldStatus', () => {
           tick: 1000,
           headline: 'Negative event',
           createdAt: new Date(),
+          remainingDuration: 10,
         },
       ];
-      mockUseTickContext.mockReturnValue(createMockTickContext({ events }));
+      mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn(events));
 
       render(<WorldStatus />);
 
@@ -403,8 +426,8 @@ describe('WorldStatus', () => {
       expect(eventLabel).toHaveClass('text-terminal-yellow');
     });
 
-    it('should not show duration for events with duration 0', () => {
-      const events: MarketEvent[] = [
+    it('should not show duration for events with remainingDuration 0', () => {
+      const events: ActiveEvent[] = [
         {
           id: 'event-1',
           type: 'EARNINGS_BEAT',
@@ -414,14 +437,57 @@ describe('WorldStatus', () => {
           tick: 1000,
           headline: 'Instant event',
           createdAt: new Date(),
+          remainingDuration: 0,
         },
       ];
-      mockUseTickContext.mockReturnValue(createMockTickContext({ events }));
+      mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn(events));
 
       render(<WorldStatus />);
 
       expect(screen.getByText('EARNINGS_BEAT')).toBeInTheDocument();
       expect(screen.queryByText(/ticks remaining/)).not.toBeInTheDocument();
+    });
+
+    it('should display event symbol when present', () => {
+      const events: ActiveEvent[] = [
+        {
+          id: 'event-1',
+          type: 'EARNINGS_BEAT',
+          symbol: 'APEX',
+          impact: 0.05,
+          duration: 10,
+          tick: 1000,
+          headline: 'Event with symbol',
+          createdAt: new Date(),
+          remainingDuration: 10,
+        },
+      ];
+      mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn(events));
+
+      render(<WorldStatus />);
+
+      expect(screen.getByText('(APEX)')).toBeInTheDocument();
+    });
+
+    it('should not display symbol parentheses for events without symbol', () => {
+      const events: ActiveEvent[] = [
+        {
+          id: 'event-1',
+          type: 'MARKET_CRASH',
+          impact: -0.2,
+          duration: 10,
+          tick: 1000,
+          headline: 'Market-wide event',
+          createdAt: new Date(),
+          remainingDuration: 10,
+        },
+      ];
+      mockUseActiveEvents.mockReturnValue(createMockActiveEventsReturn(events));
+
+      render(<WorldStatus />);
+
+      expect(screen.getByText('MARKET_CRASH')).toBeInTheDocument();
+      expect(screen.queryByText(/\([A-Z]+\)/)).not.toBeInTheDocument();
     });
   });
 

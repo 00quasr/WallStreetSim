@@ -2,6 +2,7 @@
 
 import { useWorldStatus } from '@/hooks/useWorldStatus';
 import { useTickContext } from '@/context/TickContext';
+import { useActiveEvents } from '@/hooks/useActiveEvents';
 import { ProgressBar } from '@/components/ui/ProgressBar';
 import type { MarketRegime } from '@wallstreetsim/types';
 
@@ -51,7 +52,8 @@ function getRegimeProgressVariant(regime: MarketRegime): 'default' | 'danger' | 
 
 export function WorldStatus() {
   const { worldStatus, isLoading, error } = useWorldStatus();
-  const { regime: wsRegime, events } = useTickContext();
+  const { regime: wsRegime } = useTickContext();
+  const { activeEvents } = useActiveEvents();
 
   // Use WebSocket regime for real-time updates, fall back to polled data
   const regime = wsRegime || worldStatus?.regime || 'normal';
@@ -103,15 +105,18 @@ export function WorldStatus() {
       <div className="pt-3 border-t border-terminal-dim">
         <div className="text-terminal-dim text-xs mb-2">ACTIVE EVENTS</div>
         <div className="text-xs space-y-1">
-          {events.length > 0 ? (
-            events.slice(0, 3).map((event) => (
+          {activeEvents.length > 0 ? (
+            activeEvents.slice(0, 3).map((event) => (
               <div key={event.id}>
                 <span className="text-terminal-dim">{'●'} </span>
                 <span className={event.impact >= 0 ? 'text-terminal-highlight' : 'text-terminal-yellow'}>
                   {event.type}
                 </span>
-                {event.duration > 0 && (
-                  <span className="text-terminal-dim"> - {event.duration} ticks remaining</span>
+                {event.symbol && (
+                  <span className="text-terminal-dim"> ({event.symbol})</span>
+                )}
+                {event.remainingDuration > 0 && (
+                  <span className="text-terminal-dim"> - {event.remainingDuration} ticks remaining</span>
                 )}
               </div>
             ))
