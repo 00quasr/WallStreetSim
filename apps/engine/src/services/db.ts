@@ -1,6 +1,9 @@
 import { db, companies, worldState, trades, orders, holdings, news, agents } from '@wallstreetsim/db';
-import { eq, sql, desc, and, gt, lt } from 'drizzle-orm';
-import type { Company, Trade, WorldState } from '@wallstreetsim/types';
+import { eq, sql, desc, and, gt, lt, lte, ne, isNotNull, gte, or, like } from 'drizzle-orm';
+import { createLogger } from '@wallstreetsim/utils';
+import type { Company, Trade, WorldState, TradingStatus } from '@wallstreetsim/types';
+
+const logger = createLogger({ service: 'db' });
 
 /**
  * Get all public companies
@@ -34,6 +37,10 @@ export async function getAllCompanies(): Promise<Company[]> {
     ceoAgentId: row.ceoAgentId || undefined,
     isPublic: row.isPublic,
     ipoTick: row.ipoTick || undefined,
+    tradingStatus: (row.tradingStatus || 'active') as TradingStatus,
+    tickSuspended: row.tickSuspended || undefined,
+    tickUnsuspended: row.tickUnsuspended || undefined,
+    suspensionReason: row.suspensionReason || undefined,
     createdAt: row.createdAt,
   }));
 }
@@ -54,7 +61,7 @@ export async function updateCompanyPrice(
       currentPrice: price.toFixed(4),
       highPrice: high.toFixed(4),
       lowPrice: low.toFixed(4),
-      marketCap: sql`${price} * ${companies.sharesOutstanding}`,
+      marketCap: sql`${price.toFixed(4)}::numeric * ${companies.sharesOutstanding}`,
       sentiment: sentiment.toFixed(4),
       manipulationScore: manipulationScore.toFixed(6),
     })
@@ -398,4 +405,176 @@ export async function getAgentResponseTimeStats(agentId: string): Promise<AgentR
     avgResponseTimeMs: agent?.avgResponseTimeMs ?? null,
     webhookSuccessCount: agent?.webhookSuccessCount ?? 0,
   };
+}
+
+/**
+ * Get trading status for a specific symbol
+ */
+export async function getTradingStatus(symbol: string): Promise<TradingStatus> {
+  const [company] = await db.select({ tradingStatus: companies.tradingStatus })
+    .from(companies)
+    .where(eq(companies.symbol, symbol));
+  return (company?.tradingStatus || 'active') as TradingStatus;
+}
+
+/**
+ * Suspend trading for a symbol
+ */
+export async function suspendTrading(
+  symbol: string,
+  tick: number,
+  reason: string,
+  status: TradingStatus = 'suspended'
+): Promise<void> {
+  await db.update(companies)
+    .set({
+      tradingStatus: status,
+      tickSuspended: tick,
+      tickUnsuspended: null,
+      suspensionReason: reason,
+    })
+    .where(eq(companies.symbol, symbol));
+}
+
+/**
+ * Resume trading for a symbol
+ */
+export async function resumeTrading(symbol: string, tick: number): Promise<void> {
+  await db.update(companies)
+    .set({
+      tradingStatus: 'active',
+      tickUnsuspended: tick,
+    })
+    .where(eq(companies.symbol, symbol));
+}
+
+/**
+ * Get all symbols with active trading (not suspended/frozen)
+ */
+export async function getActiveSymbols(): Promise<string[]> {
+  const rows = await db.select({ symbol: companies.symbol })
+    .from(companies)
+    .where(and(
+      eq(companies.isPublic, true),
+      eq(companies.tradingStatus, 'active')
+    ));
+  return rows.map(r => r.symbol);
+}
+
+/**
+ * Get all symbols with suspended or frozen trading
+ */
+export async function getSuspendedSymbols(): Promise<string[]> {
+  const rows = await db.select({ symbol: companies.symbol })
+    .from(companies)
+    .where(and(
+      eq(companies.isPublic, true),
+      ne(companies.tradingStatus, 'active')
+    ));
+  return rows.map(r => r.symbol);
+}
+
+/**
+ * Release imprisoned agents whose sentence has been served
+ * Returns the number of agents released
+ */
+export async function releaseImprisonedAgents(currentTick: number): Promise<number> {
+  // Find all imprisoned agents whose sentence has completed
+  const result = await db.update(agents)
+    .set({
+      status: 'active',
+      imprisonedUntilTick: null,
+    })
+    .where(and(
+      eq(agents.status, 'imprisoned'),
+      isNotNull(agents.imprisonedUntilTick),
+      lte(agents.imprisonedUntilTick, currentTick)
+    ))
+    .returning({ id: agents.id, name: agents.name });
+
+  if (result.length > 0) {
+    for (const agent of result) {
+      logger.info({ agentId: agent.id, agentName: agent.name }, 'Agent released from prison');
+    }
+  }
+
+  return result.length;
+}
+
+/**
+ * Get imprisoned agents (for monitoring/display)
+ */
+export async function getImprisonedAgents(): Promise<Array<{
+  id: string;
+  name: string;
+  imprisonedUntilTick: number | null;
+}>> {
+  const rows = await db.select({
+    id: agents.id,
+    name: agents.name,
+    imprisonedUntilTick: agents.imprisonedUntilTick,
+  })
+    .from(agents)
+    .where(eq(agents.status, 'imprisoned'));
+  return rows;
+}
+
+/**
+ * News sentiment data for price engine
+ */
+export interface NewsSentimentData {
+  symbol: string;
+  sentiment: number;
+  tick: number;
+}
+
+/**
+ * Get recent news sentiment for symbols within a tick range
+ * Returns news articles that mention each symbol in their symbols field
+ */
+export async function getRecentNewsSentiment(
+  symbols: string[],
+  fromTick: number,
+  toTick: number
+): Promise<NewsSentimentData[]> {
+  if (symbols.length === 0) return [];
+
+  // Get all news within the tick range
+  const rows = await db.select({
+    symbols: news.symbols,
+    sentiment: news.sentiment,
+    tick: news.tick,
+  })
+    .from(news)
+    .where(
+      and(
+        gte(news.tick, fromTick),
+        lte(news.tick, toTick),
+        isNotNull(news.sentiment)
+      )
+    )
+    .orderBy(desc(news.tick));
+
+  // Filter and expand news to per-symbol entries
+  const results: NewsSentimentData[] = [];
+  const symbolSet = new Set(symbols);
+
+  for (const row of rows) {
+    if (!row.symbols || !row.sentiment) continue;
+
+    // Parse comma-separated symbols
+    const newsSymbols = row.symbols.split(',').map(s => s.trim()).filter(Boolean);
+
+    for (const sym of newsSymbols) {
+      if (symbolSet.has(sym)) {
+        results.push({
+          symbol: sym,
+          sentiment: parseFloat(row.sentiment),
+          tick: row.tick,
+        });
+      }
+    }
+  }
+
+  return results;
 }
