@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import type { Company, Trade, PriceUpdate, MarketEvent, WorldState, SectorData, Sector, TickUpdate, Order, OrderType, OrderSide, OrderProcessedEvent, ActionResult, AgentActionType, InvestigationAlert, NewsArticle, EngineHeartbeat, EngineStatus } from '@wallstreetsim/types';
+import type { Company, Trade, PriceUpdate, MarketEvent, WorldState, SectorData, Sector, TickUpdate, Order, OrderType, OrderSide, OrderProcessedEvent, ActionResult, AgentActionType, InvestigationAlert, NewsArticle, EngineHeartbeat, EngineStatus, MarketRegime } from '@wallstreetsim/types';
 import {
   TICK_INTERVAL_MS,
   MARKET_OPEN_TICK,
@@ -510,12 +510,16 @@ export class TickEngine extends EventEmitter {
       logger.info(`  News: generated ${generatedNews.length} article(s)`);
     }
 
+    // Get world state for regime
+    const currentWorldState = await dbService.getWorldState();
+    const currentRegime: MarketRegime = currentWorldState?.regime ?? 'normal';
+
     // Create tick update
     const tickUpdate: TickUpdate = {
       tick: this.currentTick,
       timestamp: new Date(),
       marketOpen: this.marketOpen,
-      regime: 'normal',
+      regime: currentRegime,
       priceUpdates,
       trades,
       events,

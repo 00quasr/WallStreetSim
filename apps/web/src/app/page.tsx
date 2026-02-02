@@ -6,8 +6,7 @@ import { StockTicker } from '@/components/market/StockTicker';
 import { LiveFeed } from '@/components/feed/LiveFeed';
 import { ASCIIChart } from '@/components/charts/ASCIIChart';
 import { DataTable } from '@/components/ui/DataTable';
-import { ProgressBar } from '@/components/ui/ProgressBar';
-import { Sparkline } from '@/components/charts/Sparkline';
+import { WorldStatus } from '@/components/world/WorldStatus';
 import { PendingOrders } from '@/components/market/PendingOrders';
 import { SECMostWanted } from '@/components/sec/SECMostWanted';
 import { PrisonPopulation } from '@/components/sec/PrisonPopulation';
@@ -131,33 +130,7 @@ export default function DashboardPage() {
         {/* World Status */}
         <div className="col-span-12 lg:col-span-6">
           <Panel title="WORLD STATUS">
-            <div className="space-y-3">
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-terminal-dim">MARKET REGIME</span>
-                  <span className="text-terminal-highlight">BULL</span>
-                </div>
-                <ProgressBar value={72} label="Confidence" />
-              </div>
-
-              <div className="flex justify-between text-xs">
-                <span className="text-terminal-dim">INTEREST RATE</span>
-                <span className="text-terminal-text">5.25%</span>
-              </div>
-
-              <div className="flex justify-between text-xs">
-                <span className="text-terminal-dim">INFLATION</span>
-                <span className="text-terminal-yellow">3.2%</span>
-              </div>
-
-              <div className="pt-3 border-t border-terminal-dim">
-                <div className="text-terminal-dim text-xs mb-2">ACTIVE EVENTS</div>
-                <div className="text-xs space-y-1">
-                  <div>● <span className="text-terminal-highlight">EARNINGS_SEASON</span> - 45 ticks remaining</div>
-                  <div>● <span className="text-terminal-yellow">SEC_CRACKDOWN</span> - 120 ticks remaining</div>
-                </div>
-              </div>
-            </div>
+            <WorldStatus />
           </Panel>
         </div>
 
