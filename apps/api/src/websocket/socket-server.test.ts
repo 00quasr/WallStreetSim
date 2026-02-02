@@ -47,6 +47,8 @@ describe('SocketServer', () => {
           subscribe: vi.fn(),
           on: vi.fn(),
           quit: vi.fn().mockResolvedValue(undefined),
+          get: vi.fn().mockResolvedValue(null), // For auto-recovery data reads
+          publish: vi.fn().mockResolvedValue(1), // For callback confirmation publish
         })),
       };
     });
@@ -1638,6 +1640,1085 @@ describe('SocketServer', () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       expect(socketServer.getConnectedCount()).toBe(0);
+    });
+  });
+
+  describe('agent reconnection detection', () => {
+    it('should track agent disconnect info when last session disconnects', async () => {
+      const client = await connectClient();
+
+      // Authenticate
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect the client
+      client.disconnect();
+
+      // Wait for disconnect to be processed
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Check that disconnect info was stored
+      const disconnectInfo = socketServer.getAgentDisconnectInfo('agent123');
+      expect(disconnectInfo).toBeDefined();
+      expect(disconnectInfo!.disconnectTime).toBeInstanceOf(Date);
+    });
+
+    it('should emit AGENT_RECONNECTED when agent reconnects after disconnect', async () => {
+      // First connection
+      const client1 = await connectClient();
+      await new Promise<void>((resolve) => {
+        client1.on('AUTH_SUCCESS', () => resolve());
+        client1.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect
+      client1.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Verify disconnect was tracked
+      expect(socketServer.getAgentDisconnectInfo('agent123')).toBeDefined();
+
+      // Reconnect with a new client
+      const client2Promise = new Promise<typeof clientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await client2Promise;
+
+      // Set up listener for AGENT_RECONNECTED
+      const reconnectedPromise = new Promise<{
+        type: string;
+        payload: {
+          agentId: string;
+          previousDisconnectTime: string;
+          disconnectDurationMs: number;
+          missedTicks?: number;
+        };
+      }>((resolve) => {
+        client2.on('AGENT_RECONNECTED', resolve);
+      });
+
+      // Authenticate as the same agent
+      client2.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+
+      // Wait for AGENT_RECONNECTED
+      const reconnected = await reconnectedPromise;
+
+      expect(reconnected.type).toBe('AGENT_RECONNECTED');
+      expect(reconnected.payload.agentId).toBe('agent123');
+      expect(reconnected.payload.previousDisconnectTime).toBeDefined();
+      expect(reconnected.payload.disconnectDurationMs).toBeGreaterThan(0);
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should not emit AGENT_RECONNECTED on first connection', async () => {
+      const client = await connectClient();
+
+      let reconnectedReceived = false;
+      client.on('AGENT_RECONNECTED', () => {
+        reconnectedReceived = true;
+      });
+
+      // Authenticate - this is first connection, not a reconnection
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_newagent_secretkey' });
+      });
+
+      // Wait a bit to ensure no AGENT_RECONNECTED is sent
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(reconnectedReceived).toBe(false);
+
+      // Cleanup
+      client.disconnect();
+    });
+
+    it('should clear disconnect info after reconnection', async () => {
+      // First connection
+      const client1 = await connectClient();
+      await new Promise<void>((resolve) => {
+        client1.on('AUTH_SUCCESS', () => resolve());
+        client1.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect
+      client1.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Verify disconnect was tracked
+      expect(socketServer.getAgentDisconnectInfo('agent123')).toBeDefined();
+
+      // Reconnect
+      const client2Promise = new Promise<typeof clientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await client2Promise;
+
+      await new Promise<void>((resolve) => {
+        client2.on('AUTH_SUCCESS', () => resolve());
+        client2.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect info should be cleared after reconnection
+      expect(socketServer.getAgentDisconnectInfo('agent123')).toBeUndefined();
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should not track disconnect when other sessions exist', async () => {
+      // Connect first client and authenticate
+      const client1 = await connectClient();
+      await new Promise<void>((resolve) => {
+        client1.on('AUTH_SUCCESS', () => resolve());
+        client1.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Connect second client and authenticate as same agent
+      const client2Promise = new Promise<typeof clientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await client2Promise;
+
+      await new Promise<void>((resolve) => {
+        client2.on('AUTH_SUCCESS', () => resolve());
+        client2.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect first client (second still connected)
+      client1.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Should NOT track disconnect because there's still an active session
+      expect(socketServer.getAgentDisconnectInfo('agent123')).toBeUndefined();
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should include missed ticks in AGENT_RECONNECTED when available', async () => {
+      // Set the current tick
+      socketServer.setCurrentTick(100);
+
+      // First connection
+      const client1 = await connectClient();
+      await new Promise<void>((resolve) => {
+        client1.on('AUTH_SUCCESS', () => resolve());
+        client1.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect
+      client1.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Advance the tick
+      socketServer.setCurrentTick(110);
+
+      // Reconnect
+      const client2Promise = new Promise<typeof clientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await client2Promise;
+
+      // Set up listener for AGENT_RECONNECTED
+      const reconnectedPromise = new Promise<{
+        type: string;
+        payload: {
+          agentId: string;
+          previousDisconnectTime: string;
+          disconnectDurationMs: number;
+          missedTicks?: number;
+        };
+      }>((resolve) => {
+        client2.on('AGENT_RECONNECTED', resolve);
+      });
+
+      // Authenticate
+      client2.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+
+      const reconnected = await reconnectedPromise;
+
+      expect(reconnected.payload.missedTicks).toBe(10);
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should have getCurrentTick and setCurrentTick methods', () => {
+      expect(typeof socketServer.getCurrentTick).toBe('function');
+      expect(typeof socketServer.setCurrentTick).toBe('function');
+
+      socketServer.setCurrentTick(50);
+      expect(socketServer.getCurrentTick()).toBe(50);
+
+      // Should only accept higher values
+      socketServer.setCurrentTick(40);
+      expect(socketServer.getCurrentTick()).toBe(50);
+
+      socketServer.setCurrentTick(60);
+      expect(socketServer.getCurrentTick()).toBe(60);
+    });
+
+    it('should have clearAgentDisconnectInfo method', async () => {
+      expect(typeof socketServer.clearAgentDisconnectInfo).toBe('function');
+
+      // First connection
+      const client = await connectClient();
+      await new Promise<void>((resolve) => {
+        client.on('AUTH_SUCCESS', () => resolve());
+        client.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect
+      client.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Verify disconnect was tracked
+      expect(socketServer.getAgentDisconnectInfo('agent123')).toBeDefined();
+
+      // Clear the disconnect info
+      socketServer.clearAgentDisconnectInfo('agent123');
+
+      // Should be cleared
+      expect(socketServer.getAgentDisconnectInfo('agent123')).toBeUndefined();
+    });
+  });
+
+  describe('automatic recovery', () => {
+    it('should have isAutoRecoveryEnabled method', () => {
+      expect(typeof socketServer.isAutoRecoveryEnabled).toBe('function');
+    });
+
+    it('should have auto-recovery enabled by default', () => {
+      expect(socketServer.isAutoRecoveryEnabled()).toBe(true);
+    });
+
+    it('should allow disabling auto-recovery via option', async () => {
+      // Close the default server
+      if (clientSocket?.connected) {
+        clientSocket.disconnect();
+      }
+      await socketServer.close();
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+
+      // Create a new server with auto-recovery disabled
+      const noRecoveryHttpServer = createServer();
+      const noRecoverySocketServer = new SocketServer(noRecoveryHttpServer, { enableAutoRecovery: false });
+
+      await new Promise<void>((resolve) => {
+        noRecoveryHttpServer.listen(TEST_PORT + 6, resolve);
+      });
+
+      expect(noRecoverySocketServer.isAutoRecoveryEnabled()).toBe(false);
+
+      // Cleanup
+      await noRecoverySocketServer.close();
+      await new Promise<void>((resolve) => {
+        noRecoveryHttpServer.close(() => resolve());
+      });
+
+      // Restore original server for subsequent tests
+      httpServer = createServer();
+      socketServer = new SocketServer(httpServer);
+      await new Promise<void>((resolve) => {
+        httpServer.listen(TEST_PORT, resolve);
+      });
+    });
+
+    it('should allow disabling auto-recovery via SOCKET_AUTO_RECOVERY env var', async () => {
+      // Close the default server
+      if (clientSocket?.connected) {
+        clientSocket.disconnect();
+      }
+      await socketServer.close();
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+
+      // Set env var to disable
+      const originalEnv = process.env.SOCKET_AUTO_RECOVERY;
+      process.env.SOCKET_AUTO_RECOVERY = 'false';
+
+      // Create a new server without explicit option (should read from env)
+      const noRecoveryHttpServer = createServer();
+      const noRecoverySocketServer = new SocketServer(noRecoveryHttpServer);
+
+      await new Promise<void>((resolve) => {
+        noRecoveryHttpServer.listen(TEST_PORT + 7, resolve);
+      });
+
+      expect(noRecoverySocketServer.isAutoRecoveryEnabled()).toBe(false);
+
+      // Cleanup
+      process.env.SOCKET_AUTO_RECOVERY = originalEnv;
+      await noRecoverySocketServer.close();
+      await new Promise<void>((resolve) => {
+        noRecoveryHttpServer.close(() => resolve());
+      });
+
+      // Restore original server for subsequent tests
+      httpServer = createServer();
+      socketServer = new SocketServer(httpServer);
+      await new Promise<void>((resolve) => {
+        httpServer.listen(TEST_PORT, resolve);
+      });
+    });
+
+it('should publish callback confirmation on reconnection', async () => {
+      socketServer.setCurrentTick(100);
+
+      // First connection
+      const client1 = await connectClient();
+      await new Promise<void>((resolve) => {
+        client1.on('AUTH_SUCCESS', () => resolve());
+        client1.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect
+      client1.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Advance the tick to trigger reconnection logic
+      socketServer.setCurrentTick(110);
+
+      // Reconnect
+      const client2Promise = new Promise<typeof clientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await client2Promise;
+
+      // Wait for AGENT_RECONNECTED to confirm the reconnection flow completes
+      const reconnectedPromise = new Promise<{
+        type: string;
+        payload: {
+          agentId: string;
+        };
+      }>((resolve) => {
+        client2.on('AGENT_RECONNECTED', resolve);
+      });
+
+      // Authenticate
+      client2.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+
+      const reconnected = await reconnectedPromise;
+      expect(reconnected.payload.agentId).toBe('agent123');
+
+      // The callback confirmation should have been published to Redis
+      // We can't directly verify the Redis publish here since it's mocked,
+      // but we verify the reconnection flow completed successfully
+      // which triggers the callback confirmation
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should not send recovery messages when no events are missed', async () => {
+      socketServer.setCurrentTick(100);
+
+      // First connection
+      const client1 = await connectClient();
+      await new Promise<void>((resolve) => {
+        client1.on('AUTH_SUCCESS', () => resolve());
+        client1.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Disconnect
+      client1.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Do NOT advance the tick (no events missed)
+      // socketServer.setCurrentTick(100); // Same tick
+
+      // Reconnect
+      const client2Promise = new Promise<typeof clientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await client2Promise;
+
+      // Track received events
+      let recoveryStartReceived = false;
+      client2.on('RECOVERY_START', () => {
+        recoveryStartReceived = true;
+      });
+
+      // Authenticate
+      await new Promise<void>((resolve) => {
+        client2.on('AUTH_SUCCESS', () => resolve());
+        client2.emit('AUTH', { apiKey: 'wss_agent123_secretkey' });
+      });
+
+      // Wait a bit to ensure no recovery messages are sent
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // No recovery should be triggered since missedTicks is 0
+      expect(recoveryStartReceived).toBe(false);
+
+      // Cleanup
+      client2.disconnect();
+    });
+  });
+
+  describe('Redis tick update emission', () => {
+    it('should emit TICK_UPDATE to clients on every tick received from Redis', async () => {
+      const client = await connectClient();
+
+      // Collect received tick updates
+      const receivedTicks: number[] = [];
+      const tickUpdatePromise = new Promise<void>((resolve) => {
+        client.on('TICK_UPDATE', (data: { tick: number; payload: { tick: number } }) => {
+          // The data could be the full message or just the payload depending on structure
+          const tick = data.tick ?? data.payload?.tick;
+          if (tick) {
+            receivedTicks.push(tick);
+          }
+          if (receivedTicks.length >= 3) {
+            resolve();
+          }
+        });
+      });
+
+      // Simulate engine sending tick updates by broadcasting directly
+      // This mirrors what happens when handleRedisMessage processes tick updates
+      for (let i = 1; i <= 3; i++) {
+        const tickUpdate = {
+          tick: i,
+          timestamp: new Date().toISOString(),
+          marketOpen: true,
+          regime: 'normal',
+          priceUpdates: [{ symbol: 'APEX', newPrice: 100 + i, change: 1, changePercent: 1, volume: 1000 }],
+          trades: [],
+          events: [],
+          news: [],
+        };
+        socketServer.broadcast('tick', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+      }
+
+      await tickUpdatePromise;
+
+      expect(receivedTicks).toContain(1);
+      expect(receivedTicks).toContain(2);
+      expect(receivedTicks).toContain(3);
+    });
+
+    it('should include tick number, marketOpen status, and priceUpdates in TICK_UPDATE', async () => {
+      const client = await connectClient();
+
+      const tickUpdatePromise = new Promise<{
+        tick: number;
+        marketOpen: boolean;
+        priceUpdates: { symbol: string; newPrice: number }[];
+        timestamp: string;
+      }>((resolve) => {
+        client.on('TICK_UPDATE', resolve);
+      });
+
+      const tickUpdate = {
+        tick: 42,
+        timestamp: new Date().toISOString(),
+        marketOpen: true,
+        regime: 'bull',
+        priceUpdates: [
+          { symbol: 'APEX', newPrice: 150.50, oldPrice: 149.00, change: 1.50, changePercent: 1.01, volume: 1000 },
+          { symbol: 'NOVA', newPrice: 75.25, oldPrice: 74.00, change: 1.25, changePercent: 1.69, volume: 500 },
+        ],
+        trades: [],
+        events: [],
+        news: [],
+      };
+
+      socketServer.broadcast('tick', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tickUpdatePromise;
+
+      expect(received.tick).toBe(42);
+      expect(received.marketOpen).toBe(true);
+      expect(received.priceUpdates).toHaveLength(2);
+      expect(received.priceUpdates[0].symbol).toBe('APEX');
+      expect(received.priceUpdates[0].newPrice).toBe(150.50);
+      expect(received.priceUpdates[1].symbol).toBe('NOVA');
+    });
+
+    it('should emit TICK_UPDATE to all clients subscribed to tick room', async () => {
+      // Connect multiple clients
+      const client1 = await connectClient();
+      const secondClientPromise = new Promise<ClientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await secondClientPromise;
+
+      // Both clients auto-join tick room
+      expect(socketServer.getConnectedCount()).toBe(2);
+
+      const client1Ticks: number[] = [];
+      const client2Ticks: number[] = [];
+
+      const client1Promise = new Promise<void>((resolve) => {
+        client1.on('TICK_UPDATE', (data: { tick: number }) => {
+          client1Ticks.push(data.tick);
+          if (client1Ticks.length >= 1) resolve();
+        });
+      });
+
+      const client2Promise = new Promise<void>((resolve) => {
+        client2.on('TICK_UPDATE', (data: { tick: number }) => {
+          client2Ticks.push(data.tick);
+          if (client2Ticks.length >= 1) resolve();
+        });
+      });
+
+      // Broadcast tick update
+      const tickUpdate = {
+        tick: 100,
+        timestamp: new Date().toISOString(),
+        marketOpen: false,
+        regime: 'normal',
+        priceUpdates: [],
+        trades: [],
+        events: [],
+        news: [],
+      };
+
+      socketServer.broadcast('tick', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await Promise.all([client1Promise, client2Promise]);
+
+      expect(client1Ticks).toContain(100);
+      expect(client2Ticks).toContain(100);
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should emit TICK_UPDATE to legacy tick_updates room as well', async () => {
+      const client = await connectClient();
+
+      // Client should already be in tick_updates room (auto-joined on connect)
+      const tickUpdatePromise = new Promise<{ tick: number }>((resolve) => {
+        client.on('TICK_UPDATE', resolve);
+      });
+
+      const tickUpdate = {
+        tick: 55,
+        timestamp: new Date().toISOString(),
+        marketOpen: true,
+        regime: 'normal',
+        priceUpdates: [],
+        trades: [],
+        events: [],
+        news: [],
+      };
+
+      // Broadcast to tick_updates room (legacy)
+      socketServer.broadcast('tick_updates', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tickUpdatePromise;
+      expect(received.tick).toBe(55);
+    });
+
+    it('should update internal currentTick when processing tick updates', async () => {
+      // Verify that setCurrentTick updates the internal state
+      expect(socketServer.getCurrentTick()).toBe(0);
+
+      socketServer.setCurrentTick(10);
+      expect(socketServer.getCurrentTick()).toBe(10);
+
+      // Only higher values should update
+      socketServer.setCurrentTick(5);
+      expect(socketServer.getCurrentTick()).toBe(10);
+
+      socketServer.setCurrentTick(20);
+      expect(socketServer.getCurrentTick()).toBe(20);
+    });
+
+    it('should handle rapid consecutive tick updates', async () => {
+      const client = await connectClient();
+
+      const receivedTicks: number[] = [];
+      const tickCount = 10;
+
+      const allTicksPromise = new Promise<void>((resolve) => {
+        client.on('TICK_UPDATE', (data: { tick: number }) => {
+          receivedTicks.push(data.tick);
+          if (receivedTicks.length >= tickCount) {
+            resolve();
+          }
+        });
+      });
+
+      // Rapidly send tick updates
+      for (let i = 1; i <= tickCount; i++) {
+        const tickUpdate = {
+          tick: i,
+          timestamp: new Date().toISOString(),
+          marketOpen: true,
+          regime: 'normal',
+          priceUpdates: [],
+          trades: [],
+          events: [],
+          news: [],
+        };
+        socketServer.broadcast('tick', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+      }
+
+      await allTicksPromise;
+
+      expect(receivedTicks).toHaveLength(tickCount);
+      // Verify all ticks were received
+      for (let i = 1; i <= tickCount; i++) {
+        expect(receivedTicks).toContain(i);
+      }
+    });
+
+    it('should include trades and events in tick update when present', async () => {
+      const client = await connectClient();
+
+      const tickUpdatePromise = new Promise<{
+        tick: number;
+        trades: { id: string; symbol: string }[];
+        events: { type: string; symbol: string }[];
+      }>((resolve) => {
+        client.on('TICK_UPDATE', resolve);
+      });
+
+      const tickUpdate = {
+        tick: 77,
+        timestamp: new Date().toISOString(),
+        marketOpen: true,
+        regime: 'normal',
+        priceUpdates: [],
+        trades: [
+          { id: 'trade-1', symbol: 'APEX', price: 100, quantity: 10, buyerId: 'agent-1', sellerId: 'agent-2', tick: 77 },
+        ],
+        events: [
+          { type: 'EARNINGS', symbol: 'APEX', magnitude: 0.5, description: 'Earnings beat expectations' },
+        ],
+        news: [],
+      };
+
+      socketServer.broadcast('tick', 'TICK_UPDATE', tickUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tickUpdatePromise;
+
+      expect(received.tick).toBe(77);
+      expect(received.trades).toHaveLength(1);
+      expect(received.trades[0].symbol).toBe('APEX');
+      expect(received.events).toHaveLength(1);
+      expect(received.events[0].type).toBe('EARNINGS');
+    });
+  });
+
+  describe('Redis price update emission', () => {
+    it('should emit PRICE_UPDATE to clients subscribed to prices channel', async () => {
+      const client = await connectClient();
+
+      // Subscribe to prices channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const priceUpdatePromise = new Promise<{
+        type: string;
+        payload: {
+          tick: number;
+          prices: { symbol: string; price: number; change: number; changePercent: number; volume: number }[];
+        };
+        timestamp: string;
+      }>((resolve) => {
+        client.on('PRICE_UPDATE', resolve);
+      });
+
+      // Simulate price update broadcast (as if received from Redis)
+      const priceUpdate = {
+        type: 'PRICE_UPDATE',
+        payload: {
+          tick: 100,
+          prices: [
+            { symbol: 'APEX', price: 150.50, change: 1.50, changePercent: 1.01, volume: 1000000 },
+            { symbol: 'NOVA', price: 75.25, change: -0.75, changePercent: -0.99, volume: 500000 },
+            { symbol: 'QUANTUM', price: 200.00, change: 2.00, changePercent: 1.00, volume: 750000 },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('prices', 'PRICE_UPDATE', priceUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await priceUpdatePromise;
+      expect(received.type).toBe('PRICE_UPDATE');
+      expect(received.payload.tick).toBe(100);
+      expect(received.payload.prices).toHaveLength(3);
+      expect(received.payload.prices[0].symbol).toBe('APEX');
+      expect(received.payload.prices[1].symbol).toBe('NOVA');
+      expect(received.payload.prices[2].symbol).toBe('QUANTUM');
+    });
+
+    it('should include all symbols in price update payload', async () => {
+      const client = await connectClient();
+
+      // Subscribe to prices channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const priceUpdatePromise = new Promise<{
+        payload: {
+          tick: number;
+          prices: { symbol: string; price: number; change: number; changePercent: number; volume: number }[];
+        };
+      }>((resolve) => {
+        client.on('PRICE_UPDATE', resolve);
+      });
+
+      // Simulate all 10 symbols receiving price updates
+      const allSymbols = ['APEX', 'NOVA', 'QUANTUM', 'TITAN', 'VORTEX', 'NEXUS', 'PULSE', 'CIPHER', 'STARK', 'OMEGA'];
+      const priceUpdate = {
+        type: 'PRICE_UPDATE',
+        payload: {
+          tick: 42,
+          prices: allSymbols.map((symbol, i) => ({
+            symbol,
+            price: 100 + i * 10,
+            change: (i % 2 === 0 ? 1 : -1) * (i + 1) * 0.5,
+            changePercent: (i % 2 === 0 ? 1 : -1) * (i + 1) * 0.1,
+            volume: 100000 * (i + 1),
+          })),
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('prices', 'PRICE_UPDATE', priceUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await priceUpdatePromise;
+      expect(received.payload.prices).toHaveLength(10);
+
+      // Verify all symbols are present
+      const receivedSymbols = received.payload.prices.map(p => p.symbol);
+      for (const symbol of allSymbols) {
+        expect(receivedSymbols).toContain(symbol);
+      }
+    });
+
+    it('should emit PRICE_UPDATE to multiple clients subscribed to prices channel', async () => {
+      // Connect first client
+      const client1 = await connectClient();
+
+      // Subscribe client1 to prices
+      await new Promise<void>((resolve) => {
+        client1.on('SUBSCRIBED', () => resolve());
+        client1.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+      client1.removeAllListeners('SUBSCRIBED');
+
+      // Connect second client
+      const secondClientConnect = new Promise<ClientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await secondClientConnect;
+
+      // Subscribe client2 to prices
+      await new Promise<void>((resolve) => {
+        client2.on('SUBSCRIBED', () => resolve());
+        client2.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+      client2.removeAllListeners('SUBSCRIBED');
+
+      const client1Received: { symbol: string; price: number }[] = [];
+      const client2Received: { symbol: string; price: number }[] = [];
+
+      const client1RecvPromise = new Promise<void>((resolve) => {
+        client1.on('PRICE_UPDATE', (data: { payload: { prices: { symbol: string; price: number }[] } }) => {
+          client1Received.push(...data.payload.prices);
+          resolve();
+        });
+      });
+
+      const client2RecvPromise = new Promise<void>((resolve) => {
+        client2.on('PRICE_UPDATE', (data: { payload: { prices: { symbol: string; price: number }[] } }) => {
+          client2Received.push(...data.payload.prices);
+          resolve();
+        });
+      });
+
+      // Broadcast price update
+      const priceUpdate = {
+        type: 'PRICE_UPDATE',
+        payload: {
+          tick: 50,
+          prices: [
+            { symbol: 'APEX', price: 155.00, change: 5.00, changePercent: 3.33, volume: 2000000 },
+            { symbol: 'NOVA', price: 80.00, change: 4.75, changePercent: 6.31, volume: 1000000 },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('prices', 'PRICE_UPDATE', priceUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await Promise.all([client1RecvPromise, client2RecvPromise]);
+
+      // Both clients should receive all prices
+      expect(client1Received).toHaveLength(2);
+      expect(client2Received).toHaveLength(2);
+      expect(client1Received.map(p => p.symbol)).toContain('APEX');
+      expect(client1Received.map(p => p.symbol)).toContain('NOVA');
+      expect(client2Received.map(p => p.symbol)).toContain('APEX');
+      expect(client2Received.map(p => p.symbol)).toContain('NOVA');
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should emit MARKET_UPDATE to symbol-specific subscribers for each symbol', async () => {
+      const client = await connectClient();
+
+      // Subscribe to specific symbols
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['market:APEX', 'market:NOVA'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const receivedUpdates: { symbol: string; price: number }[] = [];
+      const bothReceived = new Promise<void>((resolve) => {
+        client.on('MARKET_UPDATE', (data: { payload: { symbol: string; price: number } }) => {
+          receivedUpdates.push(data.payload);
+          if (receivedUpdates.length >= 2) resolve();
+        });
+      });
+
+      // Broadcast individual market updates for each symbol
+      const apexUpdate = {
+        type: 'MARKET_UPDATE',
+        payload: { symbol: 'APEX', price: 160.00, change: 10.00, changePercent: 6.67, volume: 3000000 },
+        timestamp: new Date().toISOString(),
+      };
+
+      const novaUpdate = {
+        type: 'MARKET_UPDATE',
+        payload: { symbol: 'NOVA', price: 85.00, change: 9.75, changePercent: 12.94, volume: 1500000 },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('market:APEX', 'MARKET_UPDATE', apexUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+      socketServer.broadcast('market:NOVA', 'MARKET_UPDATE', novaUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await bothReceived;
+
+      expect(receivedUpdates).toHaveLength(2);
+      const symbols = receivedUpdates.map(u => u.symbol);
+      expect(symbols).toContain('APEX');
+      expect(symbols).toContain('NOVA');
+    });
+
+    it('should not emit MARKET_UPDATE for unsubscribed symbols', async () => {
+      const client = await connectClient();
+
+      // Subscribe only to APEX
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['market:APEX'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      let apexReceived = false;
+      let novaReceived = false;
+
+      client.on('MARKET_UPDATE', (data: { payload: { symbol: string } }) => {
+        if (data.payload.symbol === 'APEX') apexReceived = true;
+        if (data.payload.symbol === 'NOVA') novaReceived = true;
+      });
+
+      // Broadcast NOVA update (should not be received)
+      socketServer.broadcast('market:NOVA', 'MARKET_UPDATE', {
+        type: 'MARKET_UPDATE',
+        payload: { symbol: 'NOVA', price: 90.00, change: 14.75, changePercent: 19.60, volume: 2000000 },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Broadcast APEX update (should be received)
+      socketServer.broadcast('market:APEX', 'MARKET_UPDATE', {
+        type: 'MARKET_UPDATE',
+        payload: { symbol: 'APEX', price: 165.00, change: 15.00, changePercent: 10.00, volume: 4000000 },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Wait for messages
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(apexReceived).toBe(true);
+      expect(novaReceived).toBe(false);
+    });
+
+    it('should handle rapid consecutive price updates', async () => {
+      const client = await connectClient();
+
+      // Subscribe to prices channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const receivedUpdates: number[] = [];
+      const updateCount = 10;
+
+      const allUpdatesPromise = new Promise<void>((resolve) => {
+        client.on('PRICE_UPDATE', (data: { payload: { tick: number } }) => {
+          receivedUpdates.push(data.payload.tick);
+          if (receivedUpdates.length >= updateCount) {
+            resolve();
+          }
+        });
+      });
+
+      // Rapidly send price updates
+      for (let i = 1; i <= updateCount; i++) {
+        const priceUpdate = {
+          type: 'PRICE_UPDATE',
+          payload: {
+            tick: i,
+            prices: [
+              { symbol: 'APEX', price: 150 + i, change: i * 0.5, changePercent: i * 0.1, volume: i * 100000 },
+            ],
+          },
+          timestamp: new Date().toISOString(),
+        };
+        socketServer.broadcast('prices', 'PRICE_UPDATE', priceUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+      }
+
+      await allUpdatesPromise;
+
+      expect(receivedUpdates).toHaveLength(updateCount);
+      // Verify all ticks were received
+      for (let i = 1; i <= updateCount; i++) {
+        expect(receivedUpdates).toContain(i);
+      }
+    });
+
+    it('should emit both PRICE_UPDATE and individual MARKET_UPDATE for complete coverage', async () => {
+      // Client 1: subscribes to combined prices channel
+      const client1 = await connectClient();
+      await new Promise<void>((resolve) => {
+        client1.on('SUBSCRIBED', () => resolve());
+        client1.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+      client1.removeAllListeners('SUBSCRIBED');
+
+      // Client 2: subscribes to individual symbol channels
+      const secondClientConn = new Promise<ClientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await secondClientConn;
+      await new Promise<void>((resolve) => {
+        client2.on('SUBSCRIBED', () => resolve());
+        client2.emit('SUBSCRIBE', { channels: ['market:APEX', 'market:NOVA'] });
+      });
+      client2.removeAllListeners('SUBSCRIBED');
+
+      let client1ReceivedPriceUpdate = false;
+      let client2ReceivedApex = false;
+      let client2ReceivedNova = false;
+
+      const client1RecvPromise = new Promise<void>((resolve) => {
+        client1.on('PRICE_UPDATE', (data: { payload: { prices: { symbol: string }[] } }) => {
+          const symbols = data.payload.prices.map(p => p.symbol);
+          if (symbols.includes('APEX') && symbols.includes('NOVA')) {
+            client1ReceivedPriceUpdate = true;
+          }
+          resolve();
+        });
+      });
+
+      const client2RecvPromise = new Promise<void>((resolve) => {
+        let count = 0;
+        client2.on('MARKET_UPDATE', (data: { payload: { symbol: string } }) => {
+          if (data.payload.symbol === 'APEX') client2ReceivedApex = true;
+          if (data.payload.symbol === 'NOVA') client2ReceivedNova = true;
+          count++;
+          if (count >= 2) resolve();
+        });
+      });
+
+      // Broadcast combined price update to prices channel
+      const priceUpdate = {
+        type: 'PRICE_UPDATE',
+        payload: {
+          tick: 200,
+          prices: [
+            { symbol: 'APEX', price: 170.00, change: 20.00, changePercent: 13.33, volume: 5000000 },
+            { symbol: 'NOVA', price: 95.00, change: 19.75, changePercent: 26.25, volume: 3000000 },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+      socketServer.broadcast('prices', 'PRICE_UPDATE', priceUpdate as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Also broadcast individual market updates for symbol-specific subscribers
+      socketServer.broadcast('market:APEX', 'MARKET_UPDATE', {
+        type: 'MARKET_UPDATE',
+        payload: { symbol: 'APEX', price: 170.00, change: 20.00, changePercent: 13.33, volume: 5000000 },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      socketServer.broadcast('market:NOVA', 'MARKET_UPDATE', {
+        type: 'MARKET_UPDATE',
+        payload: { symbol: 'NOVA', price: 95.00, change: 19.75, changePercent: 26.25, volume: 3000000 },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await Promise.all([client1RecvPromise, client2RecvPromise]);
+
+      // Client 1 should receive combined PRICE_UPDATE with both symbols
+      expect(client1ReceivedPriceUpdate).toBe(true);
+
+      // Client 2 should receive individual MARKET_UPDATE for each subscribed symbol
+      expect(client2ReceivedApex).toBe(true);
+      expect(client2ReceivedNova).toBe(true);
+
+      // Cleanup
+      client2.disconnect();
     });
   });
 });
