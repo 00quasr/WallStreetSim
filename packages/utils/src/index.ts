@@ -5,6 +5,7 @@ export {
   TICKS_AFTER_HOURS,
   MARKET_OPEN_TICK,
   MARKET_CLOSE_TICK,
+  TICKS_PER_SENTENCE_YEAR,
   MAX_ORDER_QUANTITY,
   MIN_ORDER_QUANTITY,
   MAX_PRICE,
@@ -14,7 +15,10 @@ export {
   AGENT_PRESSURE_WEIGHT,
   RANDOM_WALK_WEIGHT,
   SECTOR_CORRELATION_WEIGHT,
+  SENTIMENT_WEIGHT,
   MAX_TICK_MOVE,
+  SENTIMENT_LOOKBACK_TICKS,
+  SENTIMENT_DECAY_FACTOR,
   BASE_EVENT_CHANCE,
   BLACK_SWAN_CHANCE,
   ROLE_CONFIGS,
@@ -49,6 +53,9 @@ export {
   SymbolParamSchema,
   AgentIdParamSchema,
   EnvSchema,
+  LogLevelSchema,
+  validateEnv,
+  safeValidateEnv,
 } from './validation';
 
 export type {
@@ -147,6 +154,23 @@ export type {
   CircuitStats,
 } from './circuit-breaker';
 
+// LLM Rate Limiter utilities
+export {
+  LLMRateLimiter,
+  getLLMRateLimiter,
+  resetLLMRateLimiter,
+  withRateLimit,
+  RateLimitExceededError,
+  DEFAULT_LLM_RATE_LIMIT_CONFIG,
+  LLM_RATE_LIMIT_PROFILES,
+} from './llm-rate-limiter';
+
+export type {
+  LLMRateLimiterConfig,
+  RateLimitAcquireResult,
+  RateLimiterStats,
+} from './llm-rate-limiter';
+
 // Sentiment analysis utilities
 export {
   analyzeSentiment,
@@ -156,3 +180,50 @@ export {
 } from './sentiment';
 
 export type { SentimentResult, RumorImpactConfig, RumorImpactResult } from './sentiment';
+
+// Logger utilities
+export {
+  createLogger,
+  createChildLogger,
+  createRotatingLogger,
+  getLogger,
+  loggers,
+  getLogLevel,
+  isValidLogLevel,
+  LOG_LEVELS,
+  DEFAULT_LOG_LEVELS,
+  // Log rotation utilities
+  DEFAULT_LOG_DIR,
+  DEFAULT_MAX_DAYS,
+  ensureLogDirectory,
+  getLogFilename,
+  getLogFilePath,
+  cleanOldLogFiles,
+  getLogFiles,
+  createLogRotationManager,
+} from './logger';
+
+export type {
+  Logger,
+  Level,
+  LoggerConfig,
+  LogLevel,
+  Environment,
+  RotatingLogger,
+  LogRotationConfig,
+  LogRotationManager,
+} from './logger';
+
+// Request context utilities
+export {
+  runWithRequestContext,
+  getRequestContext,
+  getRequestId,
+  getAgentId,
+  setAgentId,
+  getRequestLogger,
+  getRequestDuration,
+  createRequestChildLogger,
+} from './request-context';
+
+export type { RequestContext } from './request-context';

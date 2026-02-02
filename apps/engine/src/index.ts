@@ -1,17 +1,30 @@
 import { TickEngine } from './tick-engine';
-import { formatTick, formatTimestamp, formatPercent, formatCurrency } from '@wallstreetsim/utils';
-import type { TickUpdate, MarketEvent, PriceUpdate, OrderProcessedEvent } from '@wallstreetsim/types';
+import { createLogger, formatTick, formatTimestamp, formatPercent, formatCurrency, safeValidateEnv } from '@wallstreetsim/utils';
+import type { TickUpdate, MarketEvent, OrderProcessedEvent } from '@wallstreetsim/types';
+
+// Validate environment variables at startup
+const envResult = safeValidateEnv();
+if (!envResult.success) {
+  console.error('Environment validation failed:');
+  for (const issue of envResult.error.issues) {
+    console.error(`  - ${issue.path.join('.')}: ${issue.message}`);
+  }
+  process.exit(1);
+}
+const env = envResult.data;
+
+const logger = createLogger({ service: 'engine' });
 
 async function main() {
-  console.log('');
-  console.log('╔═══════════════════════════════════════════════════════╗');
-  console.log('║         WALLSTREETSIM - TICK ENGINE                   ║');
-  console.log('║         THE MARKET NEVER SLEEPS                       ║');
-  console.log('╚═══════════════════════════════════════════════════════╝');
-  console.log('');
+  logger.info('');
+  logger.info('╔═══════════════════════════════════════════════════════╗');
+  logger.info('║         WALLSTREETSIM - TICK ENGINE                   ║');
+  logger.info('║         THE MARKET NEVER SLEEPS                       ║');
+  logger.info('╚═══════════════════════════════════════════════════════╝');
+  logger.info('');
 
   const engine = new TickEngine({
-    tickIntervalMs: parseInt(process.env.TICK_INTERVAL_MS || '1000', 10),
+    tickIntervalMs: env.TICK_INTERVAL_MS,
     enableEvents: true,
     eventChance: 0.005,
   });
@@ -24,37 +37,42 @@ async function main() {
       .slice(0, 3);
 
     if (movers.length > 0 || update.tick % 60 === 0) {
-      console.log(`\n[${formatTimestamp(update.timestamp)}] Tick ${formatTick(update.tick)} ${update.marketOpen ? '📈 OPEN' : '🌙 CLOSED'}`);
+      logger.info({
+        timestamp: formatTimestamp(update.timestamp),
+        tick: formatTick(update.tick),
+        marketOpen: update.marketOpen,
+      }, `Tick ${formatTick(update.tick)} ${update.marketOpen ? '📈 OPEN' : '🌙 CLOSED'}`);
 
       if (movers.length > 0) {
-        console.log('  Top Movers:');
+        logger.info('  Top Movers:');
         movers.forEach(m => {
           const arrow = m.changePercent > 0 ? '▲' : '▼';
           const color = m.changePercent > 0 ? '\x1b[32m' : '\x1b[31m';
-          console.log(`    ${color}${arrow} ${m.symbol.padEnd(6)} $${m.newPrice.toFixed(2).padStart(8)} ${formatPercent(m.changePercent)}\x1b[0m`);
+          logger.info(`    ${color}${arrow} ${m.symbol.padEnd(6)} $${m.newPrice.toFixed(2).padStart(8)} ${formatPercent(m.changePercent)}\x1b[0m`);
         });
       }
 
       if (update.trades.length > 0) {
-        console.log(`  Trades: ${update.trades.length}`);
+        logger.info({ tradeCount: update.trades.length }, 'Trades executed');
       }
     }
   });
 
   engine.on('event', (event: MarketEvent) => {
     const emoji = event.impact > 0 ? '📰' : '⚠️';
-    console.log(`\n${emoji} EVENT: ${event.headline}`);
-    console.log(`   Type: ${event.type}, Impact: ${formatPercent(event.impact * 100)}, Duration: ${event.duration} ticks`);
-    if (event.symbol) {
-      console.log(`   Symbol: ${event.symbol}`);
-    }
+    logger.info({
+      type: event.type,
+      impact: formatPercent(event.impact * 100),
+      duration: event.duration,
+      symbol: event.symbol,
+    }, `${emoji} EVENT: ${event.headline}`);
   });
 
   engine.on('marketStatus', ({ open, tick }: { open: boolean; tick: number }) => {
     if (open) {
-      console.log(`\n🔔 MARKET OPEN - Tick ${formatTick(tick)}`);
+      logger.info({ tick: formatTick(tick) }, '🔔 MARKET OPEN');
     } else {
-      console.log(`\n🔔 MARKET CLOSED - Tick ${formatTick(tick)}`);
+      logger.info({ tick: formatTick(tick) }, '🔔 MARKET CLOSED');
     }
   });
 
@@ -71,7 +89,7 @@ async function main() {
     const fillStr = event.filledQuantity > 0
       ? ` [${event.filledQuantity}/${event.quantity}]`
       : '';
-    console.log(
+    logger.info(
       `  ${sideColor}${statusIcon} ${event.side.padEnd(4)} ${event.symbol.padEnd(6)} ` +
       `${event.quantity.toString().padStart(5)} @ ${priceStr.padStart(12)} ` +
       `${event.status.toUpperCase()}${fillStr}\x1b[0m`
@@ -79,12 +97,12 @@ async function main() {
   });
 
   engine.on('error', (error: Error) => {
-    console.error('\n❌ ENGINE ERROR:', error.message);
+    logger.error({ err: error }, 'ENGINE ERROR');
   });
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log('\n\nShutting down...');
+    logger.info('Shutting down...');
     await engine.shutdown();
     process.exit(0);
   };
@@ -97,9 +115,9 @@ async function main() {
     await engine.initialize();
     engine.start();
 
-    console.log('\nEngine running. Press Ctrl+C to stop.\n');
+    logger.info('Engine running. Press Ctrl+C to stop.');
   } catch (error) {
-    console.error('Failed to start engine:', error);
+    logger.error({ err: error }, 'Failed to start engine');
     process.exit(1);
   }
 }

@@ -1,15 +1,26 @@
 import { serve } from '@hono/node-server';
 import cluster from 'cluster';
-import { createLogger, createChildLogger } from '@wallstreetsim/utils';
+import { createLogger, createChildLogger, safeValidateEnv } from '@wallstreetsim/utils';
 import { app } from './app';
 import { initSocketServer } from './websocket';
+
+// Validate environment variables at startup
+const envResult = safeValidateEnv();
+if (!envResult.success) {
+  console.error('Environment validation failed:');
+  for (const issue of envResult.error.issues) {
+    console.error(`  - ${issue.path.join('.')}: ${issue.message}`);
+  }
+  process.exit(1);
+}
+const env = envResult.data;
 
 // Worker ID for cluster mode logging (0 = primary/fork mode)
 const workerId = cluster.isWorker ? cluster.worker?.id ?? 0 : 0;
 const baseLogger = createLogger({ service: 'api' });
 const logger = createChildLogger(baseLogger, { workerId });
 
-const port = parseInt(process.env.API_PORT || '8080', 10);
+const port = env.API_PORT;
 
 // Track shutdown state to prevent double shutdown
 let isShuttingDown = false;
@@ -31,7 +42,7 @@ const server = serve({
 // This ensures WebSocket is ready to accept connections as soon as HTTP starts listening
 // Enable Redis adapter when SOCKET_REDIS_ADAPTER=true for horizontal scaling
 const socketServer = initSocketServer(server, {
-  enableRedisAdapter: process.env.SOCKET_REDIS_ADAPTER === 'true',
+  enableRedisAdapter: env.SOCKET_REDIS_ADAPTER === true,
 });
 const adapterStatus = socketServer.isRedisAdapterEnabled()
   ? '(Redis adapter enabled for horizontal scaling)'
