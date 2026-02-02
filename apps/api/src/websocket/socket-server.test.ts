@@ -2721,4 +2721,384 @@ it('should publish callback confirmation on reconnection', async () => {
       client2.disconnect();
     });
   });
+
+  describe('Redis trade event emission', () => {
+    it('should emit TRADE to clients subscribed to trades channel', async () => {
+      const client = await connectClient();
+
+      // Subscribe to trades channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['trades'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const tradeEventPromise = new Promise<{
+        type: string;
+        payload: {
+          tick: number;
+          trades: { id: string; symbol: string; price: number; quantity: number; buyerId: string; sellerId: string; tick: number }[];
+        };
+        timestamp: string;
+      }>((resolve) => {
+        client.on('TRADE', resolve);
+      });
+
+      // Simulate trade event broadcast (as if received from Redis)
+      const tradeEvent = {
+        type: 'TRADE',
+        payload: {
+          tick: 100,
+          trades: [
+            { id: 'trade-1', symbol: 'APEX', price: 150.50, quantity: 100, buyerId: 'agent-1', sellerId: 'agent-2', tick: 100 },
+            { id: 'trade-2', symbol: 'NOVA', price: 75.25, quantity: 50, buyerId: 'agent-3', sellerId: 'agent-4', tick: 100 },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('trades', 'TRADE', tradeEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tradeEventPromise;
+      expect(received.type).toBe('TRADE');
+      expect(received.payload.tick).toBe(100);
+      expect(received.payload.trades).toHaveLength(2);
+      expect(received.payload.trades[0].symbol).toBe('APEX');
+      expect(received.payload.trades[1].symbol).toBe('NOVA');
+    });
+
+    it('should include all trade fields in TRADE event payload', async () => {
+      const client = await connectClient();
+
+      // Subscribe to trades channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['trades'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const tradeEventPromise = new Promise<{
+        payload: {
+          tick: number;
+          trades: { id: string; symbol: string; price: number; quantity: number; buyerId: string; sellerId: string; tick: number }[];
+        };
+      }>((resolve) => {
+        client.on('TRADE', resolve);
+      });
+
+      // Simulate trade event with all fields
+      const tradeEvent = {
+        type: 'TRADE',
+        payload: {
+          tick: 42,
+          trades: [
+            { id: 'trade-abc', symbol: 'QUANTUM', price: 200.00, quantity: 250, buyerId: 'buyer-agent', sellerId: 'seller-agent', tick: 42 },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('trades', 'TRADE', tradeEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tradeEventPromise;
+      expect(received.payload.trades).toHaveLength(1);
+      const trade = received.payload.trades[0];
+      expect(trade.id).toBe('trade-abc');
+      expect(trade.symbol).toBe('QUANTUM');
+      expect(trade.price).toBe(200.00);
+      expect(trade.quantity).toBe(250);
+      expect(trade.buyerId).toBe('buyer-agent');
+      expect(trade.sellerId).toBe('seller-agent');
+      expect(trade.tick).toBe(42);
+    });
+
+    it('should emit TRADE to multiple clients subscribed to trades channel', async () => {
+      // Connect first client
+      const client1 = await connectClient();
+
+      // Subscribe client1 to trades
+      await new Promise<void>((resolve) => {
+        client1.on('SUBSCRIBED', () => resolve());
+        client1.emit('SUBSCRIBE', { channels: ['trades'] });
+      });
+      client1.removeAllListeners('SUBSCRIBED');
+
+      // Connect second client
+      const secondClientConnect = new Promise<ClientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await secondClientConnect;
+
+      // Subscribe client2 to trades
+      await new Promise<void>((resolve) => {
+        client2.on('SUBSCRIBED', () => resolve());
+        client2.emit('SUBSCRIBE', { channels: ['trades'] });
+      });
+      client2.removeAllListeners('SUBSCRIBED');
+
+      const client1Received: { id: string; symbol: string }[] = [];
+      const client2Received: { id: string; symbol: string }[] = [];
+
+      const client1RecvPromise = new Promise<void>((resolve) => {
+        client1.on('TRADE', (data: { payload: { trades: { id: string; symbol: string }[] } }) => {
+          client1Received.push(...data.payload.trades);
+          resolve();
+        });
+      });
+
+      const client2RecvPromise = new Promise<void>((resolve) => {
+        client2.on('TRADE', (data: { payload: { trades: { id: string; symbol: string }[] } }) => {
+          client2Received.push(...data.payload.trades);
+          resolve();
+        });
+      });
+
+      // Broadcast trade event
+      const tradeEvent = {
+        type: 'TRADE',
+        payload: {
+          tick: 50,
+          trades: [
+            { id: 'trade-1', symbol: 'APEX', price: 155.00, quantity: 200, buyerId: 'agent-a', sellerId: 'agent-b', tick: 50 },
+            { id: 'trade-2', symbol: 'NOVA', price: 80.00, quantity: 100, buyerId: 'agent-c', sellerId: 'agent-d', tick: 50 },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('trades', 'TRADE', tradeEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await Promise.all([client1RecvPromise, client2RecvPromise]);
+
+      // Both clients should receive all trades
+      expect(client1Received).toHaveLength(2);
+      expect(client2Received).toHaveLength(2);
+      expect(client1Received.map(t => t.symbol)).toContain('APEX');
+      expect(client1Received.map(t => t.symbol)).toContain('NOVA');
+      expect(client2Received.map(t => t.symbol)).toContain('APEX');
+      expect(client2Received.map(t => t.symbol)).toContain('NOVA');
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should not emit TRADE to clients not subscribed to trades channel', async () => {
+      const client = await connectClient();
+
+      // Subscribe only to prices (not trades)
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      let tradeReceived = false;
+      client.on('TRADE', () => {
+        tradeReceived = true;
+      });
+
+      // Broadcast trade event
+      const tradeEvent = {
+        type: 'TRADE',
+        payload: {
+          tick: 60,
+          trades: [
+            { id: 'trade-xyz', symbol: 'TITAN', price: 300.00, quantity: 50, buyerId: 'buyer', sellerId: 'seller', tick: 60 },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('trades', 'TRADE', tradeEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Wait for potential message
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(tradeReceived).toBe(false);
+    });
+
+    it('should handle rapid consecutive trade events', async () => {
+      const client = await connectClient();
+
+      // Subscribe to trades channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['trades'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const receivedTrades: number[] = [];
+      const tradeCount = 10;
+
+      const allTradesPromise = new Promise<void>((resolve) => {
+        client.on('TRADE', (data: { payload: { tick: number } }) => {
+          receivedTrades.push(data.payload.tick);
+          if (receivedTrades.length >= tradeCount) {
+            resolve();
+          }
+        });
+      });
+
+      // Rapidly send trade events
+      for (let i = 1; i <= tradeCount; i++) {
+        const tradeEvent = {
+          type: 'TRADE',
+          payload: {
+            tick: i,
+            trades: [
+              { id: `trade-${i}`, symbol: 'APEX', price: 150 + i, quantity: i * 10, buyerId: `buyer-${i}`, sellerId: `seller-${i}`, tick: i },
+            ],
+          },
+          timestamp: new Date().toISOString(),
+        };
+        socketServer.broadcast('trades', 'TRADE', tradeEvent as unknown as import('@wallstreetsim/types').WSMessage);
+      }
+
+      await allTradesPromise;
+
+      expect(receivedTrades).toHaveLength(tradeCount);
+      // Verify all ticks were received
+      for (let i = 1; i <= tradeCount; i++) {
+        expect(receivedTrades).toContain(i);
+      }
+    });
+
+    it('should emit TRADE with empty trades array when no trades occurred', async () => {
+      const client = await connectClient();
+
+      // Subscribe to trades channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['trades'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const tradeEventPromise = new Promise<{
+        type: string;
+        payload: {
+          tick: number;
+          trades: unknown[];
+        };
+      }>((resolve) => {
+        client.on('TRADE', resolve);
+      });
+
+      // Simulate trade event with empty trades array
+      const tradeEvent = {
+        type: 'TRADE',
+        payload: {
+          tick: 70,
+          trades: [],
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('trades', 'TRADE', tradeEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tradeEventPromise;
+      expect(received.type).toBe('TRADE');
+      expect(received.payload.tick).toBe(70);
+      expect(received.payload.trades).toHaveLength(0);
+    });
+
+    it('should emit TRADE to symbol-specific channel for individual trades', async () => {
+      const client = await connectClient();
+
+      // Subscribe to symbol-specific channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['market:APEX'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const tradeEventPromise = new Promise<{
+        type: string;
+        payload: {
+          id: string;
+          symbol: string;
+          price: number;
+          quantity: number;
+          buyerId: string;
+          sellerId: string;
+          tick: number;
+        };
+        timestamp: string;
+      }>((resolve) => {
+        client.on('TRADE', resolve);
+      });
+
+      // Simulate individual symbol trade broadcast
+      const symbolTradeEvent = {
+        type: 'TRADE',
+        payload: {
+          id: 'trade-symbol-1',
+          symbol: 'APEX',
+          price: 175.00,
+          quantity: 500,
+          buyerId: 'agent-x',
+          sellerId: 'agent-y',
+          tick: 80,
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('market:APEX', 'TRADE', symbolTradeEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await tradeEventPromise;
+      expect(received.type).toBe('TRADE');
+      expect(received.payload.symbol).toBe('APEX');
+      expect(received.payload.id).toBe('trade-symbol-1');
+      expect(received.payload.price).toBe(175.00);
+      expect(received.payload.quantity).toBe(500);
+    });
+
+    it('should not emit symbol-specific TRADE for unsubscribed symbols', async () => {
+      const client = await connectClient();
+
+      // Subscribe only to APEX
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['market:APEX'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      let apexReceived = false;
+      let novaReceived = false;
+
+      client.on('TRADE', (data: { payload: { symbol: string } }) => {
+        if (data.payload.symbol === 'APEX') apexReceived = true;
+        if (data.payload.symbol === 'NOVA') novaReceived = true;
+      });
+
+      // Broadcast NOVA trade (should not be received)
+      socketServer.broadcast('market:NOVA', 'TRADE', {
+        type: 'TRADE',
+        payload: { id: 'trade-nova', symbol: 'NOVA', price: 90.00, quantity: 100, buyerId: 'b1', sellerId: 's1', tick: 90 },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Broadcast APEX trade (should be received)
+      socketServer.broadcast('market:APEX', 'TRADE', {
+        type: 'TRADE',
+        payload: { id: 'trade-apex', symbol: 'APEX', price: 165.00, quantity: 200, buyerId: 'b2', sellerId: 's2', tick: 90 },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Wait for messages
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(apexReceived).toBe(true);
+      expect(novaReceived).toBe(false);
+    });
+  });
 });
