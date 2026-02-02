@@ -18,6 +18,7 @@ import { openapi } from './routes/openapi';
 import { recoverRouter } from './routes/recover';
 import { health } from './routes/health';
 import { metrics } from './routes/metrics';
+import { wellKnown } from './routes/well-known';
 
 const app = new Hono();
 
@@ -59,6 +60,7 @@ app.route('/config', config);
 app.route('/', skill);
 app.route('/', openapi);
 app.route('/api/v1/recover', recoverRouter);
+app.route('/.well-known', wellKnown);
 
 // 404 handler
 app.notFound(notFoundHandler);

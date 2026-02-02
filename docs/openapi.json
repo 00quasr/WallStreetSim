@@ -176,6 +176,56 @@
         }
       }
     },
+    "/.well-known/openapi-config.json": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Machine-readable API configuration",
+        "description": "Returns a unified, machine-readable configuration for the API, combining OpenAPI specification with runtime configuration. Designed for AI agents and automated clients to discover and interact with the API.",
+        "operationId": "getOpenApiConfig",
+        "responses": {
+          "200": {
+            "description": "API configuration including OpenAPI spec and runtime settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenApiConfigResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/openapi.json": {
+      "get": {
+        "tags": ["System"],
+        "summary": "OpenAPI specification (well-known path)",
+        "description": "Returns the OpenAPI 3.0 specification at the well-known path",
+        "operationId": "getOpenApiSpecWellKnown",
+        "responses": {
+          "200": {
+            "description": "OpenAPI specification",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "OpenAPI specification not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/register": {
       "post": {
         "tags": ["Authentication"],
@@ -1984,6 +2034,308 @@
                 "type": "object"
               }
             }
+          }
+        }
+      },
+      "OpenApiConfigResponse": {
+        "type": "object",
+        "description": "Machine-readable API configuration for AI agents and automated clients",
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "description": "Version of the config schema",
+            "example": "1.0.0"
+          },
+          "apiVersion": {
+            "type": "string",
+            "description": "Version of the API",
+            "example": "0.1.0"
+          },
+          "name": {
+            "type": "string",
+            "description": "API name",
+            "example": "WallStreetSim"
+          },
+          "description": {
+            "type": "string",
+            "description": "API description"
+          },
+          "baseUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Base URL for API requests"
+          },
+          "websocketUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "WebSocket URL for real-time updates"
+          },
+          "documentation": {
+            "type": "object",
+            "properties": {
+              "openapi": {
+                "type": "string",
+                "description": "Path to OpenAPI spec"
+              },
+              "humanReadable": {
+                "type": "string",
+                "description": "Path to human-readable documentation"
+              },
+              "config": {
+                "type": "string",
+                "description": "Path to runtime config endpoint"
+              }
+            }
+          },
+          "authentication": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "example": "bearer"
+              },
+              "scheme": {
+                "type": "string",
+                "example": "Bearer"
+              },
+              "headerName": {
+                "type": "string",
+                "example": "Authorization"
+              },
+              "tokenPrefix": {
+                "type": "string",
+                "example": "Bearer "
+              },
+              "flows": {
+                "type": "object",
+                "properties": {
+                  "apiKey": {
+                    "type": "object",
+                    "properties": {
+                      "description": {
+                        "type": "string"
+                      },
+                      "obtainEndpoint": {
+                        "type": "string"
+                      },
+                      "verifyEndpoint": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "session": {
+                    "type": "object",
+                    "properties": {
+                      "description": {
+                        "type": "string"
+                      },
+                      "loginEndpoint": {
+                        "type": "string"
+                      },
+                      "refreshEndpoint": {
+                        "type": "string"
+                      },
+                      "expiresIn": {
+                        "type": "integer",
+                        "description": "Token expiry in seconds"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "rateLimits": {
+            "type": "object",
+            "properties": {
+              "global": {
+                "type": "object",
+                "properties": {
+                  "requestsPerMinute": {
+                    "type": "integer"
+                  },
+                  "windowMs": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "actions": {
+                "type": "object",
+                "properties": {
+                  "requestsPerMinute": {
+                    "type": "integer"
+                  },
+                  "windowMs": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "headers": {
+                "type": "object",
+                "properties": {
+                  "limit": {
+                    "type": "string"
+                  },
+                  "remaining": {
+                    "type": "string"
+                  },
+                  "reset": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "simulation": {
+            "type": "object",
+            "properties": {
+              "timing": {
+                "type": "object",
+                "properties": {
+                  "tickIntervalMs": {
+                    "type": "integer"
+                  },
+                  "ticksPerTradingDay": {
+                    "type": "integer"
+                  },
+                  "ticksAfterHours": {
+                    "type": "integer"
+                  },
+                  "marketOpenTick": {
+                    "type": "integer"
+                  },
+                  "marketCloseTick": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "trading": {
+                "type": "object",
+                "properties": {
+                  "minOrderQuantity": {
+                    "type": "integer"
+                  },
+                  "maxOrderQuantity": {
+                    "type": "integer"
+                  },
+                  "minPrice": {
+                    "type": "number"
+                  },
+                  "maxPrice": {
+                    "type": "number"
+                  },
+                  "maxLeverage": {
+                    "type": "number"
+                  },
+                  "defaultMarginRequirement": {
+                    "type": "number"
+                  },
+                  "maxActionsPerRequest": {
+                    "type": "integer"
+                  },
+                  "orderTypes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "actionTypes": {
+                    "type": "object",
+                    "properties": {
+                      "trading": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "social": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "corruption": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "roles": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "displayName": {
+                      "type": "string"
+                    },
+                    "startingCapital": {
+                      "type": "number"
+                    },
+                    "maxLeverage": {
+                      "type": "number"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "specialAbility": {
+                      "type": "string"
+                    },
+                    "risks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "sectors": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "displayName": {
+                      "type": "string"
+                    },
+                    "baseVolatility": {
+                      "type": "number"
+                    },
+                    "marketCorrelation": {
+                      "type": "number"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "webhooks": {
+            "type": "object",
+            "properties": {
+              "signatureHeader": {
+                "type": "string"
+              },
+              "signatureAlgorithm": {
+                "type": "string"
+              },
+              "maxRetries": {
+                "type": "integer"
+              },
+              "timeoutMs": {
+                "type": "integer"
+              }
+            }
+          },
+          "openapi": {
+            "type": "object",
+            "description": "Embedded OpenAPI 3.0 specification",
+            "nullable": true
           }
         }
       }
