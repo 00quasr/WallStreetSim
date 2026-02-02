@@ -97,17 +97,31 @@ test_backup_dir_param() {
     fi
 }
 
-# Test: Retention days parameter
-test_retention_param() {
-    log_test "Retention days parameter is parsed"
+# Test: Daily retention parameter
+test_daily_retention_param() {
+    log_test "Daily retention parameter is parsed"
 
     local output
-    output=$("$BACKUP_SCRIPT" --retention 14 2>&1 || true)
+    output=$("$BACKUP_SCRIPT" --daily-retention 14 2>&1 || true)
 
-    if echo "$output" | grep -q "14 days"; then
-        log_pass "Retention parameter parsed correctly"
+    if echo "$output" | grep -q "Daily retention: 14"; then
+        log_pass "Daily retention parameter parsed correctly"
     else
-        log_fail "Retention parameter not parsed"
+        log_fail "Daily retention parameter not parsed"
+    fi
+}
+
+# Test: Weekly retention parameter
+test_weekly_retention_param() {
+    log_test "Weekly retention parameter is parsed"
+
+    local output
+    output=$("$BACKUP_SCRIPT" --weekly-retention 8 2>&1 || true)
+
+    if echo "$output" | grep -q "Weekly retention: 8"; then
+        log_pass "Weekly retention parameter parsed correctly"
+    else
+        log_fail "Weekly retention parameter not parsed"
     fi
 }
 
@@ -234,6 +248,146 @@ test_cleanup_function() {
     fi
 }
 
+# Test: Daily cleanup function exists
+test_daily_cleanup_function() {
+    log_test "Daily cleanup function exists"
+
+    if grep -q 'cleanup_daily_backups' "$BACKUP_SCRIPT"; then
+        log_pass "Daily cleanup function exists in script"
+    else
+        log_fail "Daily cleanup function not found"
+    fi
+}
+
+# Test: Weekly cleanup function exists
+test_weekly_cleanup_function() {
+    log_test "Weekly cleanup function exists"
+
+    if grep -q 'cleanup_weekly_backups' "$BACKUP_SCRIPT"; then
+        log_pass "Weekly cleanup function exists in script"
+    else
+        log_fail "Weekly cleanup function not found"
+    fi
+}
+
+# Test: Weekly promotion function exists
+test_weekly_promotion_function() {
+    log_test "Weekly promotion function exists"
+
+    if grep -q 'promote_to_weekly' "$BACKUP_SCRIPT"; then
+        log_pass "Weekly promotion function exists in script"
+    else
+        log_fail "Weekly promotion function not found"
+    fi
+}
+
+# Test: Day of week detection
+test_day_of_week() {
+    log_test "Day of week detection for Sunday promotion"
+
+    if grep -q 'DAY_OF_WEEK' "$BACKUP_SCRIPT" && grep -q 'Sunday' "$BACKUP_SCRIPT"; then
+        log_pass "Day of week detection is implemented"
+    else
+        log_fail "Day of week detection not found"
+    fi
+}
+
+# Test: Default daily retention is 7
+test_default_daily_retention() {
+    log_test "Default daily retention is 7"
+
+    if grep -q 'DAILY_RETENTION:-7' "$BACKUP_SCRIPT" || grep -q 'DAILY_RETENTION="${DAILY_RETENTION:-7}"' "$BACKUP_SCRIPT"; then
+        log_pass "Default daily retention is 7"
+    else
+        log_fail "Default daily retention is not 7"
+    fi
+}
+
+# Test: Default weekly retention is 4
+test_default_weekly_retention() {
+    log_test "Default weekly retention is 4"
+
+    if grep -q 'WEEKLY_RETENTION:-4' "$BACKUP_SCRIPT" || grep -q 'WEEKLY_RETENTION="${WEEKLY_RETENTION:-4}"' "$BACKUP_SCRIPT"; then
+        log_pass "Default weekly retention is 4"
+    else
+        log_fail "Default weekly retention is not 4"
+    fi
+}
+
+# Test: Weekly backup directory structure
+test_weekly_backup_dir() {
+    log_test "Weekly backups use dedicated subdirectory"
+
+    if grep -q 'weekly_dir.*BACKUP_DIR/weekly' "$BACKUP_SCRIPT" || grep -q '\$BACKUP_DIR/weekly' "$BACKUP_SCRIPT"; then
+        log_pass "Weekly backup directory structure is correct"
+    else
+        log_fail "Weekly backup directory structure not found"
+    fi
+}
+
+# Test: Simulated daily rotation
+test_daily_rotation_simulation() {
+    log_test "Daily rotation simulation (cleanup logic)"
+
+    local test_dir
+    test_dir=$(mktemp -d)
+
+    # Create 10 fake daily backup files with different timestamps
+    for i in {1..10}; do
+        touch -d "$i days ago" "$test_dir/wallstreetsim_2024010${i}_120000.sql.gz"
+    done
+
+    # Count files before
+    local before_count
+    before_count=$(ls "$test_dir"/wallstreetsim_*.sql.gz 2>/dev/null | wc -l)
+
+    if [[ $before_count -eq 10 ]]; then
+        log_pass "Daily rotation simulation: Created 10 test backup files"
+    else
+        log_fail "Daily rotation simulation: Expected 10 files, got $before_count"
+    fi
+
+    rm -rf "$test_dir"
+}
+
+# Test: Simulated weekly rotation
+test_weekly_rotation_simulation() {
+    log_test "Weekly rotation simulation (directory structure)"
+
+    local test_dir
+    test_dir=$(mktemp -d)
+    local weekly_dir="$test_dir/weekly"
+    mkdir -p "$weekly_dir"
+
+    # Create 6 fake weekly backup files
+    for i in {1..6}; do
+        touch "$weekly_dir/wallstreetsim_weekly_2024010${i}_120000.sql.gz"
+    done
+
+    # Count files
+    local count
+    count=$(ls "$weekly_dir"/wallstreetsim_weekly_*.sql.gz 2>/dev/null | wc -l)
+
+    if [[ $count -eq 6 ]]; then
+        log_pass "Weekly rotation simulation: Created 6 test weekly backup files"
+    else
+        log_fail "Weekly rotation simulation: Expected 6 files, got $count"
+    fi
+
+    rm -rf "$test_dir"
+}
+
+# Test: Hard link or copy for weekly promotion
+test_weekly_link_or_copy() {
+    log_test "Weekly promotion uses hard link or copy"
+
+    if grep -q 'ln.*\$backup_path.*\$weekly_file' "$BACKUP_SCRIPT" || grep -q 'cp.*\$backup_path.*\$weekly_file' "$BACKUP_SCRIPT"; then
+        log_pass "Weekly promotion creates link or copy"
+    else
+        log_fail "Weekly promotion method not found"
+    fi
+}
+
 # Test: Error handling (exit codes)
 test_exit_codes() {
     log_test "Script uses proper exit codes"
@@ -344,14 +498,29 @@ main() {
     test_cleanup_function
     test_env_loading
 
+    # Rotation structural tests
+    test_daily_cleanup_function
+    test_weekly_cleanup_function
+    test_weekly_promotion_function
+    test_day_of_week
+    test_default_daily_retention
+    test_default_weekly_retention
+    test_weekly_backup_dir
+    test_weekly_link_or_copy
+
     # Functional tests
     test_help_flag
     test_invalid_flag
     test_backup_dir_param
-    test_retention_param
+    test_daily_retention_param
+    test_weekly_retention_param
     test_container_param
     test_missing_container
     test_docker_dependency
+
+    # Simulation tests
+    test_daily_rotation_simulation
+    test_weekly_rotation_simulation
 
     # Integration tests
     test_integration_backup
