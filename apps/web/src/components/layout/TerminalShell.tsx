@@ -2,6 +2,8 @@
 
 import { ReactNode } from 'react';
 import Link from 'next/link';
+import { useTickContext } from '../../context/TickContext';
+import { ConnectionStatus } from '../ui/ConnectionStatus';
 
 interface TerminalShellProps {
   children: ReactNode;
@@ -19,6 +21,8 @@ function NavLink({ href, label }: { href: string; label: string }) {
 }
 
 export function TerminalShell({ children }: TerminalShellProps) {
+  const { currentTick, connectionStatus } = useTickContext();
+
   return (
     <div className="min-h-screen bg-terminal-bg text-terminal-text font-mono crt-effect">
       {/* Scanline effect */}
@@ -49,9 +53,12 @@ export function TerminalShell({ children }: TerminalShellProps) {
             <NavLink href="/news" label="NEWS" />
           </nav>
 
-          <div className="text-right text-xs hidden sm:block">
-            <div className="text-terminal-dim">TICK</div>
-            <div className="text-terminal-highlight text-lg font-bold">0</div>
+          <div className="flex items-center gap-6">
+            <ConnectionStatus status={connectionStatus} />
+            <div className="text-right text-xs hidden sm:block">
+              <div className="text-terminal-dim">TICK</div>
+              <div className="text-terminal-highlight text-lg font-bold">{currentTick.toLocaleString()}</div>
+            </div>
           </div>
         </div>
       </header>

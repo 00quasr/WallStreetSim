@@ -44,15 +44,21 @@ vi.mock('@/components/market/OrderBook', () => ({
   ),
 }));
 
-// Mock useWebSocket for TerminalShell
-vi.mock('@/hooks/useWebSocket', () => ({
-  useWebSocket: () => ({
-    status: 'connected',
+// Mock useTickContext for TerminalShell
+vi.mock('@/context/TickContext', () => ({
+  useTickContext: () => ({
+    currentTick: 0,
+    timestamp: null,
+    marketOpen: true,
+    regime: 'normal',
+    priceUpdates: [],
+    trades: [],
+    events: [],
+    news: [],
     isConnected: true,
+    connectionStatus: 'connected',
     connect: vi.fn(),
     disconnect: vi.fn(),
-    subscribe: vi.fn(),
-    unsubscribe: vi.fn(),
   }),
 }));
 

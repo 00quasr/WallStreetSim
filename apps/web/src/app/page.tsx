@@ -8,44 +8,31 @@ import { ASCIIChart } from '@/components/charts/ASCIIChart';
 import { DataTable } from '@/components/ui/DataTable';
 import { ProgressBar } from '@/components/ui/ProgressBar';
 import { Sparkline } from '@/components/charts/Sparkline';
-
-// Mock data
-const mockStocks = [
-  { symbol: 'APEX', price: 156.78, change: 4.23, changePercent: 2.77 },
-  { symbol: 'OMEGA', price: 89.45, change: -2.15, changePercent: -2.35 },
-  { symbol: 'MEME', price: 42.00, change: 15.50, changePercent: 58.49 },
-  { symbol: 'TITAN', price: 234.12, change: -0.88, changePercent: -0.37 },
-  { symbol: 'NOVA', price: 78.33, change: 1.22, changePercent: 1.58 },
-  { symbol: 'QUANTUM', price: 312.50, change: -5.30, changePercent: -1.67 },
-];
-
-const mockFeed = [
-  { id: '1', timestamp: '14:32:15', type: 'trade' as const, content: 'APEX +10,000 @ $156.78' },
-  { id: '2', timestamp: '14:32:12', type: 'news' as const, content: 'BREAKING: SEC opens investigation into ShadowTrader' },
-  { id: '3', timestamp: '14:32:08', type: 'event' as const, content: 'AlphaWolf formed alliance with QuantumMind' },
-  { id: '4', timestamp: '14:32:01', type: 'alert' as const, content: 'DiamondHands margin call triggered' },
-  { id: '5', timestamp: '14:31:55', type: 'trade' as const, content: 'MEME +50,000 @ $42.00 - Retail coordination' },
-  { id: '6', timestamp: '14:31:48', type: 'news' as const, content: 'Apex Tech announces surprise earnings beat' },
-];
-
-const mockLeaderboard = [
-  { rank: 1, name: 'AlphaWolf', netWorth: 4200000000, change: 12.5, sparkline: [100, 110, 105, 120, 115, 130, 125] },
-  { rank: 2, name: 'QuantumMind', netWorth: 2800000000, change: 8.2, sparkline: [100, 95, 105, 110, 108, 115, 112] },
-  { rank: 3, name: 'DiamondHands', netWorth: 1100000000, change: -5.3, sparkline: [100, 110, 95, 85, 90, 80, 75] },
-  { rank: 4, name: 'MoonShot', netWorth: 890000000, change: 3.1, sparkline: [100, 102, 98, 105, 103, 108, 106] },
-  { rank: 5, name: 'DegenCapital', netWorth: 720000000, change: -2.1, sparkline: [100, 105, 102, 99, 97, 95, 93] },
-];
+import { PendingOrders } from '@/components/market/PendingOrders';
+import { useLeaderboard } from '@/hooks/useLeaderboard';
+import { useTickContext } from '@/context/TickContext';
 
 const mockPriceHistory = [
   150, 152, 148, 155, 160, 158, 162, 165, 163, 168, 172, 170, 175, 173, 178, 180, 176, 182, 185, 183,
 ];
 
 export default function DashboardPage() {
+  const { topAgents, isConnected } = useLeaderboard({ onlyActive: true });
+  const { currentTick } = useTickContext();
+
+  // Format leaderboard data for the DataTable
+  const leaderboardData = topAgents.slice(0, 5).map((entry) => ({
+    rank: entry.rank,
+    name: entry.name,
+    netWorth: entry.netWorth,
+    change24h: entry.change24h,
+  }));
+
   return (
     <TerminalShell>
       {/* Ticker */}
       <div className="mb-4">
-        <StockTicker stocks={mockStocks} />
+        <StockTicker />
       </div>
 
       {/* Main Grid */}
@@ -83,46 +70,58 @@ export default function DashboardPage() {
         {/* Live Feed */}
         <div className="col-span-12 lg:col-span-4">
           <Panel title="LIVE FEED">
-            <LiveFeed items={mockFeed} />
+            <LiveFeed />
           </Panel>
         </div>
 
         {/* Leaderboard */}
         <div className="col-span-12 lg:col-span-6">
-          <Panel title="TOP AGENTS">
-            <DataTable
-              columns={[
-                { key: 'rank', label: '#', align: 'center' },
-                {
-                  key: 'name',
-                  label: 'Agent',
-                  render: (v) => <span className="text-terminal-highlight">{v as string}</span>,
-                },
-                {
-                  key: 'netWorth',
-                  label: 'Net Worth',
-                  align: 'right',
-                  render: (v) => `$${((v as number) / 1e9).toFixed(2)}B`,
-                },
-                {
-                  key: 'change',
-                  label: '24H',
-                  align: 'right',
-                  render: (v) => (
-                    <span className={(v as number) >= 0 ? 'text-terminal-highlight' : 'text-terminal-red'}>
-                      {(v as number) >= 0 ? '+' : ''}{v as number}%
-                    </span>
-                  ),
-                },
-                {
-                  key: 'sparkline',
-                  label: 'Trend',
-                  align: 'right',
-                  render: (v) => <Sparkline data={v as number[]} width={10} />,
-                },
-              ]}
-              data={mockLeaderboard}
-            />
+          <Panel title="TOP AGENTS" status={isConnected ? undefined : 'warning'}>
+            {leaderboardData.length > 0 ? (
+              <DataTable
+                columns={[
+                  { key: 'rank', label: '#', align: 'center' },
+                  {
+                    key: 'name',
+                    label: 'Agent',
+                    render: (v) => <span className="text-terminal-highlight">{v as string}</span>,
+                  },
+                  {
+                    key: 'netWorth',
+                    label: 'Net Worth',
+                    align: 'right',
+                    render: (v) => {
+                      const value = v as number;
+                      if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
+                      if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
+                      return `$${value.toLocaleString()}`;
+                    },
+                  },
+                  {
+                    key: 'change24h',
+                    label: '24H',
+                    align: 'right',
+                    render: (v) => (
+                      <span className={(v as number) >= 0 ? 'text-terminal-highlight' : 'text-terminal-red'}>
+                        {(v as number) >= 0 ? '+' : ''}{(v as number).toFixed(1)}%
+                      </span>
+                    ),
+                  },
+                ]}
+                data={leaderboardData}
+              />
+            ) : (
+              <div className="text-terminal-dim text-xs text-center py-4">
+                {isConnected ? 'Waiting for leaderboard data...' : 'Connecting...'}
+              </div>
+            )}
+          </Panel>
+        </div>
+
+        {/* Pending Orders */}
+        <div className="col-span-12 lg:col-span-6">
+          <Panel title="PENDING ORDERS">
+            <PendingOrders />
           </Panel>
         </div>
 
@@ -224,7 +223,7 @@ export default function DashboardPage() {
       <div className="mt-4 border border-terminal-dim p-3">
         <pre className="text-xs text-terminal-dim text-center">
 {`┌─────────────────────────────────────────────────────────────────────────────────┐
-│  TICK: 15,234  │  TRADES/MIN: 1,247  │  AGENTS: 847  │  MARKET CAP: $2.4T       │
+│  TICK: ${currentTick.toLocaleString().padEnd(7)}│  TRADES/MIN: 1,247  │  AGENTS: 847  │  MARKET CAP: $2.4T       │
 │  UPTIME: 99.97%│  LATENCY: 12ms      │  IN PRISON: 23│  BANKRUPTCIES: 156       │
 └─────────────────────────────────────────────────────────────────────────────────┘`}
         </pre>
