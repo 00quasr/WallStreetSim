@@ -115,7 +115,7 @@ echo "════════════════════════�
 echo "Test Group 1: Documentation files exist"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     if [ -f "$SCRIPT_DIR/$doc" ]; then
         pass "$doc exists"
     else
@@ -131,7 +131,7 @@ echo "════════════════════════�
 echo "Test Group 2: Code Examples sections exist"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     if grep -q "## Code Examples" "$SCRIPT_DIR/$doc" 2>/dev/null; then
         pass "$doc has Code Examples section"
     else
@@ -147,7 +147,7 @@ echo "════════════════════════�
 echo "Test Group 3: Python examples exist"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     if grep -q '```python' "$SCRIPT_DIR/$doc" 2>/dev/null; then
         pass "$doc has Python code examples"
     else
@@ -163,7 +163,7 @@ echo "════════════════════════�
 echo "Test Group 4: JavaScript examples exist"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     if grep -q '```javascript' "$SCRIPT_DIR/$doc" 2>/dev/null; then
         pass "$doc has JavaScript code examples"
     else
@@ -179,7 +179,7 @@ echo "════════════════════════�
 echo "Test Group 5: curl examples exist"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     if grep -q '```bash' "$SCRIPT_DIR/$doc" 2>/dev/null || grep -q 'curl' "$SCRIPT_DIR/$doc" 2>/dev/null; then
         pass "$doc has bash/curl code examples"
     else
@@ -195,7 +195,7 @@ echo "════════════════════════�
 echo "Test Group 6: TypeScript examples exist"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     if grep -q '```typescript' "$SCRIPT_DIR/$doc" 2>/dev/null; then
         pass "$doc has TypeScript code examples"
     else
@@ -212,7 +212,7 @@ echo "Test Group 7: Python syntax validation"
 echo "═══════════════════════════════════════════════════════════════"
 
 if command -v python3 &> /dev/null; then
-    for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+    for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
         # Create subdirectory for this doc's code blocks
         mkdir -p "$TEMP_DIR/$doc"
 
@@ -258,7 +258,7 @@ echo "════════════════════════�
 echo "Test Group 8: JSON syntax validation"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     # Create subdirectory for this doc's code blocks
     mkdir -p "$TEMP_DIR/$doc"
 
@@ -301,7 +301,7 @@ echo "════════════════════════�
 echo "Test Group 9: curl command structure validation"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     # Check for proper curl command structure
     curl_count=$(grep -c 'curl -X\|curl https\?\|curl http' "$SCRIPT_DIR/$doc" 2>/dev/null | head -1 || echo "0")
 
@@ -330,7 +330,7 @@ echo "════════════════════════�
 echo "Test Group 10: Error handling patterns"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     # Check for error handling patterns
     has_try_catch=$(grep -c 'try.*catch\|try:\|except\|raise_for_status\|\.catch\|catch.*error\|connect_error' "$SCRIPT_DIR/$doc" 2>/dev/null | head -1 || echo "0")
     has_response_check=$(grep -c 'response.ok\|response.raise_for_status\|status.*401\|status.*4\|reject\|Error' "$SCRIPT_DIR/$doc" 2>/dev/null | head -1 || echo "0")
@@ -394,14 +394,47 @@ for doc in "actions.md"; do
 done
 
 # -----------------------------------------------------------------------------
-# Test 14: Documentation has consistent formatting
+# Test 14: Rate limiting documentation specifics
 # -----------------------------------------------------------------------------
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "Test Group 14: Documentation formatting consistency"
+echo "Test Group 14: Rate limiting documentation"
 echo "═══════════════════════════════════════════════════════════════"
 
-for doc in "actions.md" "webhooks.md" "websocket-events.md"; do
+for doc in "rate-limiting-error-handling.md"; do
+    # Check for rate limit headers documentation
+    has_headers=$(grep -c 'X-RateLimit-Limit\|X-RateLimit-Remaining\|X-RateLimit-Reset' "$SCRIPT_DIR/$doc" 2>/dev/null || echo "0")
+    has_429=$(grep -c '429\|Too Many Requests\|retryAfter' "$SCRIPT_DIR/$doc" 2>/dev/null || echo "0")
+    has_error_codes=$(grep -c '400\|401\|404\|500' "$SCRIPT_DIR/$doc" 2>/dev/null || echo "0")
+
+    if [ "$has_headers" -gt 0 ]; then
+        pass "$doc: Documents rate limit headers"
+    else
+        fail "$doc: Missing rate limit header documentation"
+    fi
+
+    if [ "$has_429" -gt 0 ]; then
+        pass "$doc: Documents 429 response handling"
+    else
+        fail "$doc: Missing 429 response documentation"
+    fi
+
+    if [ "$has_error_codes" -gt 0 ]; then
+        pass "$doc: Documents HTTP error status codes"
+    else
+        fail "$doc: Missing HTTP error status code documentation"
+    fi
+done
+
+# -----------------------------------------------------------------------------
+# Test 15: Documentation has consistent formatting
+# -----------------------------------------------------------------------------
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo "Test Group 15: Documentation formatting consistency"
+echo "═══════════════════════════════════════════════════════════════"
+
+for doc in "actions.md" "webhooks.md" "websocket-events.md" "rate-limiting-error-handling.md"; do
     # Check for section headers
     has_curl_section=$(grep -c "### curl" "$SCRIPT_DIR/$doc" 2>/dev/null || echo "0")
     has_python_section=$(grep -c "### Python" "$SCRIPT_DIR/$doc" 2>/dev/null || echo "0")
