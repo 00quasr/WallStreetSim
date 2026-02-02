@@ -568,6 +568,40 @@ sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d your-domain.com -d www.your-domain.com
 ```
 
+- [ ] **Configure SSL auto-renewal cron job**
+```bash
+# Create renewal hook to reload nginx after certificate renewal
+sudo mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh > /dev/null << 'EOF'
+#!/bin/bash
+systemctl reload nginx
+EOF
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+
+# Create cron job for auto-renewal (runs twice daily)
+sudo tee /etc/cron.d/certbot-renew > /dev/null << 'EOF'
+# Certbot auto-renewal - runs twice daily
+0 */12 * * * root certbot renew --quiet --deploy-hook 'systemctl reload nginx'
+EOF
+sudo chmod 644 /etc/cron.d/certbot-renew
+
+# Alternatively, enable the systemd timer (preferred on modern Ubuntu)
+sudo systemctl enable certbot.timer
+sudo systemctl start certbot.timer
+```
+
+- [ ] **Verify auto-renewal is configured**
+```bash
+# Test the renewal process (dry run)
+sudo certbot renew --dry-run
+
+# Check cron job exists
+cat /etc/cron.d/certbot-renew
+
+# Check systemd timer status
+systemctl status certbot.timer
+```
+
 ---
 
 ### Phase 11: Firewall Setup
