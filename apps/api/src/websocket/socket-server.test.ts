@@ -3101,4 +3101,484 @@ it('should publish callback confirmation on reconnection', async () => {
       expect(novaReceived).toBe(false);
     });
   });
+
+  describe('Redis news event emission', () => {
+    it('should emit NEWS to clients subscribed to news channel', async () => {
+      const client = await connectClient();
+
+      // Subscribe to news channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const newsEventPromise = new Promise<{
+        type: string;
+        payload: {
+          id: string;
+          tick: number;
+          headline: string;
+          category: string;
+          sentiment: number;
+          agentIds: string[];
+          symbols: string[];
+          createdAt: string;
+        };
+        timestamp: string;
+      }>((resolve) => {
+        client.on('NEWS', resolve);
+      });
+
+      // Simulate news event broadcast (as if received from Redis)
+      const newsEvent = {
+        type: 'NEWS',
+        payload: {
+          id: 'news-1',
+          tick: 100,
+          headline: 'APEX Technologies reports record quarterly earnings',
+          category: 'earnings',
+          sentiment: 0.8,
+          agentIds: [],
+          symbols: ['APEX'],
+          createdAt: new Date().toISOString(),
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('news', 'NEWS', newsEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await newsEventPromise;
+      expect(received.type).toBe('NEWS');
+      expect(received.payload.tick).toBe(100);
+      expect(received.payload.headline).toBe('APEX Technologies reports record quarterly earnings');
+      expect(received.payload.category).toBe('earnings');
+      expect(received.payload.sentiment).toBe(0.8);
+      expect(received.payload.symbols).toContain('APEX');
+    });
+
+    it('should include all NewsArticle fields in NEWS event payload', async () => {
+      const client = await connectClient();
+
+      // Subscribe to news channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const newsEventPromise = new Promise<{
+        payload: {
+          id: string;
+          tick: number;
+          headline: string;
+          content?: string;
+          category: string;
+          sentiment: number;
+          agentIds: string[];
+          symbols: string[];
+          createdAt: string;
+          isBreaking?: boolean;
+        };
+      }>((resolve) => {
+        client.on('NEWS', resolve);
+      });
+
+      // Simulate news event with all fields
+      const newsEvent = {
+        type: 'NEWS',
+        payload: {
+          id: 'news-full',
+          tick: 42,
+          headline: 'Breaking: NOVA announces major acquisition',
+          content: 'NOVA has announced the acquisition of a leading tech startup for $500M.',
+          category: 'merger',
+          sentiment: 0.6,
+          agentIds: ['agent-1', 'agent-2'],
+          symbols: ['NOVA', 'QUANTUM'],
+          createdAt: new Date().toISOString(),
+          isBreaking: true,
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('news', 'NEWS', newsEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await newsEventPromise;
+      expect(received.payload.id).toBe('news-full');
+      expect(received.payload.tick).toBe(42);
+      expect(received.payload.headline).toBe('Breaking: NOVA announces major acquisition');
+      expect(received.payload.content).toBe('NOVA has announced the acquisition of a leading tech startup for $500M.');
+      expect(received.payload.category).toBe('merger');
+      expect(received.payload.sentiment).toBe(0.6);
+      expect(received.payload.agentIds).toEqual(['agent-1', 'agent-2']);
+      expect(received.payload.symbols).toEqual(['NOVA', 'QUANTUM']);
+      expect(received.payload.isBreaking).toBe(true);
+    });
+
+    it('should emit NEWS to multiple clients subscribed to news channel', async () => {
+      // Connect first client
+      const client1 = await connectClient();
+
+      // Subscribe client1 to news
+      await new Promise<void>((resolve) => {
+        client1.on('SUBSCRIBED', () => resolve());
+        client1.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+      client1.removeAllListeners('SUBSCRIBED');
+
+      // Connect second client
+      const secondClientConnect = new Promise<ClientSocket>((resolve) => {
+        const newClient = ioc(`http://localhost:${TEST_PORT}`, {
+          transports: ['websocket'],
+        });
+        newClient.on('connect', () => resolve(newClient));
+      });
+      const client2 = await secondClientConnect;
+
+      // Subscribe client2 to news
+      await new Promise<void>((resolve) => {
+        client2.on('SUBSCRIBED', () => resolve());
+        client2.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+      client2.removeAllListeners('SUBSCRIBED');
+
+      const client1Received: { id: string; headline: string }[] = [];
+      const client2Received: { id: string; headline: string }[] = [];
+
+      const client1RecvPromise = new Promise<void>((resolve) => {
+        client1.on('NEWS', (data: { payload: { id: string; headline: string } }) => {
+          client1Received.push(data.payload);
+          resolve();
+        });
+      });
+
+      const client2RecvPromise = new Promise<void>((resolve) => {
+        client2.on('NEWS', (data: { payload: { id: string; headline: string } }) => {
+          client2Received.push(data.payload);
+          resolve();
+        });
+      });
+
+      // Broadcast news event
+      const newsEvent = {
+        type: 'NEWS',
+        payload: {
+          id: 'news-multi',
+          tick: 50,
+          headline: 'Market volatility increases amid economic concerns',
+          category: 'market',
+          sentiment: -0.3,
+          agentIds: [],
+          symbols: [],
+          createdAt: new Date().toISOString(),
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('news', 'NEWS', newsEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await Promise.all([client1RecvPromise, client2RecvPromise]);
+
+      // Both clients should receive the news
+      expect(client1Received).toHaveLength(1);
+      expect(client2Received).toHaveLength(1);
+      expect(client1Received[0].headline).toBe('Market volatility increases amid economic concerns');
+      expect(client2Received[0].headline).toBe('Market volatility increases amid economic concerns');
+
+      // Cleanup
+      client2.disconnect();
+    });
+
+    it('should not emit NEWS to clients not subscribed to news channel', async () => {
+      const client = await connectClient();
+
+      // Subscribe only to prices (not news)
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['prices'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      let newsReceived = false;
+      client.on('NEWS', () => {
+        newsReceived = true;
+      });
+
+      // Broadcast news event
+      const newsEvent = {
+        type: 'NEWS',
+        payload: {
+          id: 'news-unsub',
+          tick: 60,
+          headline: 'TITAN announces product recall',
+          category: 'product',
+          sentiment: -0.7,
+          agentIds: [],
+          symbols: ['TITAN'],
+          createdAt: new Date().toISOString(),
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('news', 'NEWS', newsEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Wait for potential message
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(newsReceived).toBe(false);
+    });
+
+    it('should broadcast NEWS with valid sentiment range', async () => {
+      const client = await connectClient();
+
+      // Subscribe to news channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const newsEvents: { payload: { sentiment: number } }[] = [];
+      const receiveThree = new Promise<void>((resolve) => {
+        client.on('NEWS', (data: { payload: { sentiment: number } }) => {
+          newsEvents.push(data);
+          if (newsEvents.length >= 3) resolve();
+        });
+      });
+
+      // Broadcast news with different sentiments
+      const sentiments = [-1, 0, 1]; // min, neutral, max
+      for (let i = 0; i < sentiments.length; i++) {
+        const newsEvent = {
+          type: 'NEWS',
+          payload: {
+            id: `news-sentiment-${i}`,
+            tick: 70 + i,
+            headline: `News article ${i}`,
+            category: 'market',
+            sentiment: sentiments[i],
+            agentIds: [],
+            symbols: [],
+            createdAt: new Date().toISOString(),
+          },
+          timestamp: new Date().toISOString(),
+        };
+        socketServer.broadcast('news', 'NEWS', newsEvent as unknown as import('@wallstreetsim/types').WSMessage);
+      }
+
+      await receiveThree;
+
+      // Verify all sentiments are within valid range [-1, 1]
+      for (const event of newsEvents) {
+        expect(event.payload.sentiment).toBeGreaterThanOrEqual(-1);
+        expect(event.payload.sentiment).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it('should broadcast NEWS with valid category', async () => {
+      const client = await connectClient();
+
+      // Subscribe to news channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const validCategories = ['earnings', 'merger', 'scandal', 'regulatory', 'market', 'product', 'analysis', 'crime', 'rumor', 'company'];
+
+      const newsEvents: { payload: { category: string } }[] = [];
+      const receiveAll = new Promise<void>((resolve) => {
+        client.on('NEWS', (data: { payload: { category: string } }) => {
+          newsEvents.push(data);
+          if (newsEvents.length >= validCategories.length) resolve();
+        });
+      });
+
+      // Broadcast news with all valid categories
+      for (let i = 0; i < validCategories.length; i++) {
+        const newsEvent = {
+          type: 'NEWS',
+          payload: {
+            id: `news-category-${i}`,
+            tick: 80 + i,
+            headline: `${validCategories[i]} news headline`,
+            category: validCategories[i],
+            sentiment: 0,
+            agentIds: [],
+            symbols: [],
+            createdAt: new Date().toISOString(),
+          },
+          timestamp: new Date().toISOString(),
+        };
+        socketServer.broadcast('news', 'NEWS', newsEvent as unknown as import('@wallstreetsim/types').WSMessage);
+      }
+
+      await receiveAll;
+
+      // Verify all received categories are valid
+      for (const event of newsEvents) {
+        expect(validCategories).toContain(event.payload.category);
+      }
+    });
+
+    it('should broadcast NEWS with symbol and agent associations', async () => {
+      const client = await connectClient();
+
+      // Subscribe to news channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const newsEventPromise = new Promise<{
+        payload: {
+          agentIds: string[];
+          symbols: string[];
+        };
+      }>((resolve) => {
+        client.on('NEWS', resolve);
+      });
+
+      // Simulate news event with multiple symbols and agents
+      const newsEvent = {
+        type: 'NEWS',
+        payload: {
+          id: 'news-assoc',
+          tick: 100,
+          headline: 'Multiple firms implicated in trading scandal',
+          category: 'scandal',
+          sentiment: -0.9,
+          agentIds: ['agent-alpha', 'agent-beta', 'agent-gamma'],
+          symbols: ['APEX', 'NOVA', 'QUANTUM'],
+          createdAt: new Date().toISOString(),
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      socketServer.broadcast('news', 'NEWS', newsEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await newsEventPromise;
+      expect(received.payload.agentIds).toHaveLength(3);
+      expect(received.payload.agentIds).toContain('agent-alpha');
+      expect(received.payload.agentIds).toContain('agent-beta');
+      expect(received.payload.agentIds).toContain('agent-gamma');
+      expect(received.payload.symbols).toHaveLength(3);
+      expect(received.payload.symbols).toContain('APEX');
+      expect(received.payload.symbols).toContain('NOVA');
+      expect(received.payload.symbols).toContain('QUANTUM');
+    });
+
+    it('should emit NEWS with timestamp', async () => {
+      const client = await connectClient();
+
+      // Subscribe to news channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const newsEventPromise = new Promise<{
+        type: string;
+        payload: { id: string };
+        timestamp: string;
+      }>((resolve) => {
+        client.on('NEWS', resolve);
+      });
+
+      const broadcastTimestamp = new Date().toISOString();
+      const newsEvent = {
+        type: 'NEWS',
+        payload: {
+          id: 'news-timestamp',
+          tick: 110,
+          headline: 'Time-stamped news article',
+          category: 'market',
+          sentiment: 0,
+          agentIds: [],
+          symbols: [],
+          createdAt: new Date().toISOString(),
+        },
+        timestamp: broadcastTimestamp,
+      };
+
+      socketServer.broadcast('news', 'NEWS', newsEvent as unknown as import('@wallstreetsim/types').WSMessage);
+
+      const received = await newsEventPromise;
+      expect(received.timestamp).toBe(broadcastTimestamp);
+      expect(new Date(received.timestamp).getTime()).not.toBeNaN();
+    });
+
+    it('should handle breaking news flag', async () => {
+      const client = await connectClient();
+
+      // Subscribe to news channel
+      await new Promise<void>((resolve) => {
+        client.on('SUBSCRIBED', () => resolve());
+        client.emit('SUBSCRIBE', { channels: ['news'] });
+      });
+
+      client.removeAllListeners('SUBSCRIBED');
+
+      const newsEvents: { payload: { id: string; isBreaking?: boolean } }[] = [];
+      const receiveTwo = new Promise<void>((resolve) => {
+        client.on('NEWS', (data: { payload: { id: string; isBreaking?: boolean } }) => {
+          newsEvents.push(data);
+          if (newsEvents.length >= 2) resolve();
+        });
+      });
+
+      // Broadcast breaking news
+      socketServer.broadcast('news', 'NEWS', {
+        type: 'NEWS',
+        payload: {
+          id: 'news-breaking',
+          tick: 120,
+          headline: 'BREAKING: Market crash imminent',
+          category: 'market',
+          sentiment: -1,
+          agentIds: [],
+          symbols: [],
+          createdAt: new Date().toISOString(),
+          isBreaking: true,
+        },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      // Broadcast regular news
+      socketServer.broadcast('news', 'NEWS', {
+        type: 'NEWS',
+        payload: {
+          id: 'news-regular',
+          tick: 121,
+          headline: 'Regular market update',
+          category: 'market',
+          sentiment: 0,
+          agentIds: [],
+          symbols: [],
+          createdAt: new Date().toISOString(),
+          isBreaking: false,
+        },
+        timestamp: new Date().toISOString(),
+      } as unknown as import('@wallstreetsim/types').WSMessage);
+
+      await receiveTwo;
+
+      const breakingNews = newsEvents.find(e => e.payload.id === 'news-breaking');
+      const regularNews = newsEvents.find(e => e.payload.id === 'news-regular');
+
+      expect(breakingNews?.payload.isBreaking).toBe(true);
+      expect(regularNews?.payload.isBreaking).toBe(false);
+    });
+  });
 });
