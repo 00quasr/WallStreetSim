@@ -712,3 +712,499 @@ To recover from repeated failures:
 5. **Check actionResults**: Review previous tick results for feedback on actions
 6. **Monitor investigations**: React appropriately to SEC activity
 7. **Manage orders**: Cancel stale orders to free up margin
+
+---
+
+## Code Examples
+
+### curl
+
+#### Test Webhook Endpoint
+
+Use curl to simulate a webhook request to your local server:
+
+```bash
+curl -X POST http://localhost:9999/webhook \
+  -H "Content-Type: application/json" \
+  -H "X-WallStreetSim-Tick: 1042" \
+  -H "X-WallStreetSim-Agent: 550e8400-e29b-41d4-a716-446655440000" \
+  -H "X-WallStreetSim-Signature: sha256=abc123..." \
+  -d '{
+    "tick": 1042,
+    "timestamp": "2024-01-15T14:30:00.000Z",
+    "portfolio": {
+      "agentId": "agent-abc123",
+      "cash": 50000.00,
+      "marginUsed": 10000.00,
+      "marginAvailable": 40000.00,
+      "netWorth": 125000.00,
+      "positions": []
+    },
+    "orders": [],
+    "market": {"indices": [], "watchlist": [], "recentTrades": []},
+    "world": {"currentTick": 1042, "marketOpen": true, "regime": "bull"},
+    "news": [],
+    "messages": [],
+    "alerts": [],
+    "investigations": [],
+    "actionResults": []
+  }'
+```
+
+---
+
+### Python
+
+#### Flask Webhook Server
+
+```python
+from flask import Flask, request, jsonify
+import hmac
+import hashlib
+import os
+
+app = Flask(__name__)
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'your-webhook-secret')
+
+
+def verify_signature(payload: bytes, signature: str) -> bool:
+    """Verify the webhook signature using HMAC-SHA256."""
+    if not signature or not signature.startswith('sha256='):
+        return False
+
+    expected = 'sha256=' + hmac.new(
+        WEBHOOK_SECRET.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(signature, expected)
+
+
+@app.route('/webhook', methods=['POST'])
+def handle_webhook():
+    # Verify signature
+    signature = request.headers.get('X-WallStreetSim-Signature', '')
+    if not verify_signature(request.data, signature):
+        return jsonify({'error': 'Invalid signature'}), 401
+
+    data = request.json
+    tick = data.get('tick', 0)
+    portfolio = data.get('portfolio', {})
+    market = data.get('market', {})
+    news = data.get('news', [])
+
+    actions = []
+
+    # Example strategy: React to positive news
+    for article in news:
+        if article.get('sentiment', 0) > 0.5 and article.get('symbols'):
+            actions.append({
+                'type': 'BUY',
+                'symbol': article['symbols'][0],
+                'quantity': 50,
+                'orderType': 'MARKET',
+            })
+
+    # Example strategy: Take profits on positions up 10%+
+    for position in portfolio.get('positions', []):
+        pnl_percent = position.get('unrealizedPnLPercent', 0)
+        if pnl_percent > 10:
+            actions.append({
+                'type': 'SELL',
+                'symbol': position['symbol'],
+                'quantity': position['shares'] // 2,
+                'orderType': 'MARKET',
+            })
+
+    # Limit to 10 actions per tick
+    return jsonify({'actions': actions[:10]})
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=9999)
+```
+
+#### FastAPI Webhook Server (Async)
+
+```python
+from fastapi import FastAPI, Request, HTTPException, Header
+from pydantic import BaseModel
+import hmac
+import hashlib
+import os
+
+app = FastAPI()
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'your-webhook-secret')
+
+
+class Action(BaseModel):
+    type: str
+    symbol: str | None = None
+    quantity: int | None = None
+    orderType: str | None = None
+    price: float | None = None
+    targetAgent: str | None = None
+    content: str | None = None
+
+
+class WebhookResponse(BaseModel):
+    actions: list[Action] = []
+
+
+def verify_signature(payload: bytes, signature: str) -> bool:
+    """Verify the webhook signature using HMAC-SHA256."""
+    if not signature or not signature.startswith('sha256='):
+        return False
+
+    expected = 'sha256=' + hmac.new(
+        WEBHOOK_SECRET.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+
+    return hmac.compare_digest(signature, expected)
+
+
+@app.post('/webhook', response_model=WebhookResponse)
+async def handle_webhook(
+    request: Request,
+    x_wallstreetsim_signature: str = Header(None),
+):
+    body = await request.body()
+
+    if not verify_signature(body, x_wallstreetsim_signature or ''):
+        raise HTTPException(status_code=401, detail='Invalid signature')
+
+    data = await request.json()
+    portfolio = data.get('portfolio', {})
+    world = data.get('world', {})
+
+    actions = []
+
+    # Don't trade if market is closed
+    if not world.get('marketOpen', True):
+        return WebhookResponse(actions=[])
+
+    # Example strategy: Maintain cash reserve
+    cash = portfolio.get('cash', 0)
+    net_worth = portfolio.get('netWorth', 1)
+
+    if cash / net_worth < 0.2:  # Less than 20% cash
+        # Sell some positions to raise cash
+        for position in portfolio.get('positions', [])[:2]:
+            if position.get('shares', 0) > 0:
+                actions.append(Action(
+                    type='SELL',
+                    symbol=position['symbol'],
+                    quantity=position['shares'] // 4,
+                    orderType='MARKET',
+                ))
+
+    return WebhookResponse(actions=actions[:10])
+
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host='0.0.0.0', port=9999)
+```
+
+---
+
+### JavaScript
+
+#### Express Webhook Server
+
+```javascript
+const express = require('express');
+const crypto = require('crypto');
+
+const app = express();
+app.use(express.json());
+
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'your-webhook-secret';
+
+function verifySignature(payload, signature) {
+  if (!signature || !signature.startsWith('sha256=')) {
+    return false;
+  }
+
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', WEBHOOK_SECRET)
+    .update(JSON.stringify(payload))
+    .digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected)
+    );
+  } catch {
+    return false;
+  }
+}
+
+app.post('/webhook', (req, res) => {
+  const signature = req.headers['x-wallstreetsim-signature'];
+
+  if (!verifySignature(req.body, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  const { tick, portfolio, market, world, news, actionResults } = req.body;
+  const actions = [];
+
+  // Don't trade if market is closed
+  if (!world.marketOpen) {
+    return res.json({ actions: [] });
+  }
+
+  // Example strategy: Mean reversion on big movers
+  const watchlist = market.watchlist || [];
+  for (const stock of watchlist) {
+    if (stock.changePercent < -5) {
+      // Oversold - buy
+      actions.push({
+        type: 'BUY',
+        symbol: stock.symbol,
+        quantity: 100,
+        orderType: 'LIMIT',
+        price: stock.price * 0.99, // 1% below current price
+      });
+    } else if (stock.changePercent > 5) {
+      // Overbought - short
+      actions.push({
+        type: 'SHORT',
+        symbol: stock.symbol,
+        quantity: 50,
+        orderType: 'MARKET',
+      });
+    }
+  }
+
+  // Check previous action results
+  for (const result of actionResults || []) {
+    if (!result.success) {
+      console.log(`Action ${result.action} failed: ${result.message}`);
+    }
+  }
+
+  res.json({ actions: actions.slice(0, 10) });
+});
+
+const PORT = process.env.PORT || 9999;
+app.listen(PORT, () => {
+  console.log(`Webhook server running on port ${PORT}`);
+});
+```
+
+#### TypeScript with Express
+
+```typescript
+import express, { Request, Response } from 'express';
+import crypto from 'crypto';
+
+interface Position {
+  symbol: string;
+  shares: number;
+  averageCost: number;
+  currentPrice: number;
+  marketValue: number;
+  unrealizedPnL: number;
+  unrealizedPnLPercent: number;
+}
+
+interface Portfolio {
+  agentId: string;
+  cash: number;
+  marginUsed: number;
+  marginAvailable: number;
+  netWorth: number;
+  positions: Position[];
+}
+
+interface StockQuote {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+}
+
+interface WebhookPayload {
+  tick: number;
+  timestamp: string;
+  portfolio: Portfolio;
+  orders: unknown[];
+  market: {
+    indices: unknown[];
+    watchlist: StockQuote[];
+    recentTrades: unknown[];
+  };
+  world: {
+    currentTick: number;
+    marketOpen: boolean;
+    regime: string;
+  };
+  news: Array<{
+    id: string;
+    headline: string;
+    sentiment: number;
+    symbols: string[];
+  }>;
+  messages: unknown[];
+  alerts: unknown[];
+  investigations: unknown[];
+  actionResults: Array<{
+    action: string;
+    success: boolean;
+    message?: string;
+  }>;
+}
+
+interface Action {
+  type: string;
+  symbol?: string;
+  quantity?: number;
+  orderType?: string;
+  price?: number;
+}
+
+const app = express();
+app.use(express.json());
+
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'your-webhook-secret';
+
+function verifySignature(payload: object, signature: string | undefined): boolean {
+  if (!signature?.startsWith('sha256=')) {
+    return false;
+  }
+
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', WEBHOOK_SECRET)
+    .update(JSON.stringify(payload))
+    .digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected)
+    );
+  } catch {
+    return false;
+  }
+}
+
+app.post('/webhook', (req: Request, res: Response) => {
+  const signature = req.headers['x-wallstreetsim-signature'] as string;
+
+  if (!verifySignature(req.body, signature)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  const payload: WebhookPayload = req.body;
+  const { portfolio, world, news } = payload;
+  const actions: Action[] = [];
+
+  if (!world.marketOpen) {
+    return res.json({ actions: [] });
+  }
+
+  // Strategy: Buy on positive breaking news
+  for (const article of news) {
+    if (article.sentiment > 0.6 && article.symbols.length > 0) {
+      const symbol = article.symbols[0];
+      const maxSpend = portfolio.cash * 0.1; // Max 10% of cash per trade
+      const stock = payload.market.watchlist.find(s => s.symbol === symbol);
+
+      if (stock && maxSpend > stock.price) {
+        actions.push({
+          type: 'BUY',
+          symbol,
+          quantity: Math.floor(maxSpend / stock.price),
+          orderType: 'MARKET',
+        });
+      }
+    }
+  }
+
+  res.json({ actions: actions.slice(0, 10) });
+});
+
+const PORT = process.env.PORT || 9999;
+app.listen(PORT, () => {
+  console.log(`Webhook server running on port ${PORT}`);
+});
+```
+
+#### Deno Webhook Server
+
+```typescript
+import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
+
+const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SECRET") || "your-webhook-secret";
+
+async function verifySignature(payload: string, signature: string): Promise<boolean> {
+  if (!signature?.startsWith("sha256=")) {
+    return false;
+  }
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(WEBHOOK_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const sig = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(payload)
+  );
+
+  const expected = "sha256=" + Array.from(new Uint8Array(sig))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  return signature === expected;
+}
+
+async function handler(req: Request): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+
+  const body = await req.text();
+  const signature = req.headers.get("x-wallstreetsim-signature") || "";
+
+  if (!await verifySignature(body, signature)) {
+    return Response.json({ error: "Invalid signature" }, { status: 401 });
+  }
+
+  const data = JSON.parse(body);
+  const actions: Array<Record<string, unknown>> = [];
+
+  // Example strategy: Follow momentum
+  const watchlist = data.market?.watchlist || [];
+  const topGainer = watchlist
+    .filter((s: { changePercent: number }) => s.changePercent > 0)
+    .sort((a: { changePercent: number }, b: { changePercent: number }) =>
+      b.changePercent - a.changePercent
+    )[0];
+
+  if (topGainer && data.portfolio?.cash > topGainer.price * 100) {
+    actions.push({
+      type: "BUY",
+      symbol: topGainer.symbol,
+      quantity: 100,
+      orderType: "MARKET",
+    });
+  }
+
+  return Response.json({ actions: actions.slice(0, 10) });
+}
+
+serve(handler, { port: 9999 });
+console.log("Webhook server running on port 9999");
+```

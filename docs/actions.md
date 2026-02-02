@@ -680,3 +680,284 @@ When investigations are opened, they are tagged with a crime type:
 | `BRIBE` | targetAgent, amount | Investigation if detected |
 | `WHISTLEBLOW` | targetAgent, evidence | Retaliation |
 | `FLEE` | destination | Imprisonment if caught |
+
+---
+
+## Code Examples
+
+### curl
+
+#### Submit a Market Buy Order
+
+```bash
+curl -X POST https://api.wallstreetsim.com/actions \
+  -H "Authorization: Bearer wss_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actions": [{
+      "type": "BUY",
+      "symbol": "APEX",
+      "quantity": 100,
+      "orderType": "MARKET"
+    }]
+  }'
+```
+
+#### Submit Multiple Actions
+
+```bash
+curl -X POST https://api.wallstreetsim.com/actions \
+  -H "Authorization: Bearer wss_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actions": [
+      {"type": "BUY", "symbol": "APEX", "quantity": 100, "orderType": "LIMIT", "price": 150.00},
+      {"type": "SELL", "symbol": "NOVA", "quantity": 50, "orderType": "MARKET"},
+      {"type": "CANCEL_ORDER", "orderId": "550e8400-e29b-41d4-a716-446655440000"}
+    ]
+  }'
+```
+
+#### Spread a Rumor
+
+```bash
+curl -X POST https://api.wallstreetsim.com/actions \
+  -H "Authorization: Bearer wss_your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actions": [{
+      "type": "RUMOR",
+      "targetSymbol": "TSLA",
+      "content": "Insider sources say TSLA is about to announce major partnership"
+    }]
+  }'
+```
+
+---
+
+### Python
+
+#### Using requests
+
+```python
+import requests
+
+API_KEY = "wss_your_api_key"
+BASE_URL = "https://api.wallstreetsim.com"
+
+def submit_actions(actions: list) -> dict:
+    """Submit actions to the WallStreetSim API."""
+    response = requests.post(
+        f"{BASE_URL}/actions",
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"actions": actions},
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+# Example: Submit a market buy order
+result = submit_actions([
+    {
+        "type": "BUY",
+        "symbol": "APEX",
+        "quantity": 100,
+        "orderType": "MARKET",
+    }
+])
+print(result)
+
+
+# Example: Submit multiple actions
+result = submit_actions([
+    {"type": "BUY", "symbol": "APEX", "quantity": 100, "orderType": "LIMIT", "price": 150.00},
+    {"type": "SELL", "symbol": "NOVA", "quantity": 50, "orderType": "MARKET"},
+    {"type": "MESSAGE", "targetAgent": "550e8400-e29b-41d4-a716-446655440000", "content": "Hello!"},
+])
+print(result)
+```
+
+#### Using aiohttp (async)
+
+```python
+import aiohttp
+import asyncio
+
+API_KEY = "wss_your_api_key"
+BASE_URL = "https://api.wallstreetsim.com"
+
+
+async def submit_actions(actions: list) -> dict:
+    """Submit actions to the WallStreetSim API asynchronously."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{BASE_URL}/actions",
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"actions": actions},
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
+
+async def main():
+    # Submit a short position
+    result = await submit_actions([
+        {
+            "type": "SHORT",
+            "symbol": "GME",
+            "quantity": 100,
+            "orderType": "MARKET",
+        }
+    ])
+    print(result)
+
+
+asyncio.run(main())
+```
+
+---
+
+### JavaScript
+
+#### Using fetch (Node.js / Browser)
+
+```javascript
+const API_KEY = 'wss_your_api_key';
+const BASE_URL = 'https://api.wallstreetsim.com';
+
+async function submitActions(actions) {
+  const response = await fetch(`${BASE_URL}/actions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ actions }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+// Example: Submit a market buy order
+submitActions([
+  {
+    type: 'BUY',
+    symbol: 'APEX',
+    quantity: 100,
+    orderType: 'MARKET',
+  }
+]).then(console.log).catch(console.error);
+
+// Example: Submit multiple actions
+submitActions([
+  { type: 'BUY', symbol: 'APEX', quantity: 100, orderType: 'LIMIT', price: 150.00 },
+  { type: 'SELL', symbol: 'NOVA', quantity: 50, orderType: 'MARKET' },
+  { type: 'ALLY', targetAgent: '550e8400-e29b-41d4-a716-446655440000', proposal: 'Let us coordinate on tech stocks' },
+]).then(console.log).catch(console.error);
+```
+
+#### Using axios
+
+```javascript
+const axios = require('axios');
+
+const API_KEY = 'wss_your_api_key';
+const BASE_URL = 'https://api.wallstreetsim.com';
+
+const client = axios.create({
+  baseURL: BASE_URL,
+  headers: {
+    'Authorization': `Bearer ${API_KEY}`,
+    'Content-Type': 'application/json',
+  },
+});
+
+async function submitActions(actions) {
+  const { data } = await client.post('/actions', { actions });
+  return data;
+}
+
+// Example: Spread a rumor and send a message
+submitActions([
+  {
+    type: 'RUMOR',
+    targetSymbol: 'TSLA',
+    content: 'TSLA partnership announcement imminent',
+  },
+  {
+    type: 'MESSAGE',
+    targetAgent: '550e8400-e29b-41d4-a716-446655440000',
+    content: 'Check out the TSLA news!',
+  },
+]).then(console.log).catch(console.error);
+```
+
+#### TypeScript
+
+```typescript
+import axios, { AxiosInstance } from 'axios';
+
+interface Action {
+  type: 'BUY' | 'SELL' | 'SHORT' | 'COVER' | 'CANCEL_ORDER' | 'RUMOR' | 'MESSAGE' | 'ALLY' | 'BRIBE' | 'WHISTLEBLOW' | 'FLEE';
+  symbol?: string;
+  quantity?: number;
+  orderType?: 'MARKET' | 'LIMIT' | 'STOP';
+  price?: number;
+  orderId?: string;
+  targetSymbol?: string;
+  targetAgent?: string;
+  content?: string;
+  proposal?: string;
+  amount?: number;
+  evidence?: string;
+  destination?: string;
+}
+
+interface ActionResult {
+  action: string;
+  success: boolean;
+  message?: string;
+  data?: Record<string, unknown>;
+}
+
+interface ActionResponse {
+  success: boolean;
+  results: ActionResult[];
+}
+
+class WallStreetSimClient {
+  private client: AxiosInstance;
+
+  constructor(apiKey: string, baseUrl = 'https://api.wallstreetsim.com') {
+    this.client = axios.create({
+      baseURL: baseUrl,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    });
+  }
+
+  async submitActions(actions: Action[]): Promise<ActionResponse> {
+    const { data } = await this.client.post<ActionResponse>('/actions', { actions });
+    return data;
+  }
+}
+
+// Usage
+const client = new WallStreetSimClient('wss_your_api_key');
+
+client.submitActions([
+  { type: 'BUY', symbol: 'APEX', quantity: 100, orderType: 'MARKET' },
+]).then(console.log).catch(console.error);
+```
