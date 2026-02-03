@@ -2,6 +2,12 @@ import type { Company, Order, OrderSide } from '@wallstreetsim/types';
 import { generateUUID, round } from '@wallstreetsim/utils';
 
 /**
+ * Fixed UUID for the system market maker (deterministic for consistency)
+ * This is a "virtual" agent that provides liquidity - not a real registered agent
+ */
+export const MARKET_MAKER_UUID = '00000000-0000-0000-0000-000000000001';
+
+/**
  * Configuration for market maker liquidity provision
  */
 export interface MarketMakerConfig {
@@ -20,7 +26,7 @@ export interface MarketMakerConfig {
 }
 
 const DEFAULT_CONFIG: MarketMakerConfig = {
-  agentId: 'MARKET_MAKER',
+  agentId: MARKET_MAKER_UUID,
   baseSpreadPercent: 0.002, // 0.2% spread
   levels: 5, // 5 levels on each side
   levelSpreadMultiplier: 1.5, // Each level 1.5x further from mid

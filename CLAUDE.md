@@ -173,6 +173,46 @@ import { formatPrice } from '../../lib/utils';
 - **Drizzle migrations** — always generate before push to production
 - **PM2** — run `pm2 save` after config changes
 - **Tick engine** is a singleton — only one instance should run
+- **Price inflation** — prices can inflate rapidly due to compounding price changes; reset via SQL if needed
+- **WSMessage format** — all Redis pub/sub messages must be wrapped in `{ type, payload, timestamp }` format
+
+## Troubleshooting
+
+### Frontend shows "DISCONNECTED"
+1. Check services: `pm2 list` — all should show "online"
+2. Check API health: `curl http://localhost:8080/health`
+3. Check WebSocket: Browser console should show CONNECTED event
+4. Hard refresh browser: `Ctrl+Shift+R` to clear cache
+
+### Tick counter stuck at 0
+- Engine must publish tick updates in WSMessage format:
+  ```typescript
+  const tickUpdateMessage = {
+    type: 'TICK_UPDATE',
+    payload: tickUpdate,
+    timestamp: new Date().toISOString(),
+  };
+  await redisService.publish(CHANNELS.TICK_UPDATES, tickUpdateMessage);
+  ```
+
+### Leaderboard not updating
+- Engine must publish to `channel:leaderboard` with LEADERBOARD_UPDATE type
+- Frontend subscribes to 'leaderboard' room automatically
+
+### Prices inflating to millions/billions
+Reset prices via SQL:
+```sql
+-- Stop engine first: pm2 stop wss-engine
+UPDATE companies SET
+  current_price = (10 + random() * 190)::numeric(20,4),
+  shares_outstanding = (1000000 + (random() * 499000000))::bigint;
+UPDATE companies SET market_cap = current_price * shares_outstanding;
+-- Restart: pm2 start wss-engine
+```
+
+### PM2 web service showing 0b memory
+- Next.js with `wait_ready: true` in cluster mode causes issues
+- Use `exec_mode: 'fork'` and `wait_ready: false` for wss-web
 
 ## Design Principles (Terminal UI)
 

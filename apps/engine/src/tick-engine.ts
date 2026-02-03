@@ -526,8 +526,13 @@ export class TickEngine extends EventEmitter {
       news: generatedNews,
     };
 
-    // Publish tick update to Redis
-    await redisService.publish(redisService.CHANNELS.TICK_UPDATES, tickUpdate);
+    // Publish tick update to Redis (wrapped in WSMessage format)
+    const tickUpdateMessage = {
+      type: 'TICK_UPDATE' as const,
+      payload: tickUpdate,
+      timestamp: new Date().toISOString(),
+    };
+    await redisService.publish(redisService.CHANNELS.TICK_UPDATES, tickUpdateMessage);
 
     // Publish dedicated price updates channel with simplified format
     if (priceUpdates.length > 0) {
@@ -755,6 +760,18 @@ export class TickEngine extends EventEmitter {
       startSequence + 1, // First sequence used in this tick
       endSequence        // Last sequence used in this tick
     );
+
+    // Publish leaderboard updates (every tick to keep UI updated)
+    const leaderboard = await dbService.getLeaderboard(100);
+    const leaderboardMessage = {
+      type: 'LEADERBOARD_UPDATE' as const,
+      payload: {
+        timestamp: new Date().toISOString(),
+        entries: leaderboard,
+      },
+      timestamp: new Date().toISOString(),
+    };
+    await redisService.publish(redisService.CHANNELS.LEADERBOARD_UPDATES, leaderboardMessage);
 
     // Emit tick event
     this.emit('tick', tickUpdate);

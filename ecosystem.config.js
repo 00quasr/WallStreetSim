@@ -1,29 +1,44 @@
 const path = require('path');
 
+// Load environment variables from .env file
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
 // Shared configuration
 const LOG_DATE_FORMAT = 'YYYY-MM-DD HH:mm:ss Z';
 const KILL_TIMEOUT = 10000; // 10 seconds for graceful shutdown
+
+// Shared environment variables for all services that need DB/Redis
+const sharedEnv = {
+  DATABASE_URL: process.env.DATABASE_URL,
+  REDIS_URL: process.env.REDIS_URL,
+  JWT_SECRET: process.env.JWT_SECRET,
+  API_SECRET: process.env.API_SECRET,
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  CLICKHOUSE_URL: process.env.CLICKHOUSE_URL,
+};
 
 module.exports = {
   apps: [
     {
       name: 'wss-web',
       cwd: './apps/web',
-      script: 'node_modules/.bin/next',
-      args: 'start',
+      script: 'npx',
+      args: 'next start',
       interpreter: 'none',
       env: {
         NODE_ENV: 'production',
-        PORT: 3000
+        PORT: 3000,
+        NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+        NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL,
       },
-      instances: 'max',
-      exec_mode: 'cluster',
+      instances: 1,
+      exec_mode: 'fork',
       autorestart: true,
       watch: false,
       max_memory_restart: '500M',
       kill_timeout: KILL_TIMEOUT,
       listen_timeout: 10000,
-      wait_ready: true,
+      wait_ready: false,
       log_date_format: LOG_DATE_FORMAT,
       error_file: path.join(__dirname, 'logs', 'wss-web-error.log'),
       out_file: path.join(__dirname, 'logs', 'wss-web-out.log'),
@@ -43,7 +58,8 @@ module.exports = {
       interpreter_args: '--enable-source-maps',
       env: {
         NODE_ENV: 'production',
-        PORT: 8080
+        PORT: 8080,
+        ...sharedEnv,
       },
       instances: 'max',
       exec_mode: 'cluster',
@@ -71,7 +87,8 @@ module.exports = {
       interpreter: 'node',
       interpreter_args: '--enable-source-maps',
       env: {
-        NODE_ENV: 'production'
+        NODE_ENV: 'production',
+        ...sharedEnv,
       },
       // Engine must be singleton - only one instance allowed
       instances: 1,

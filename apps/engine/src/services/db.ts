@@ -578,3 +578,40 @@ export async function getRecentNewsSentiment(
 
   return results;
 }
+
+/**
+ * Get agent leaderboard data
+ * Returns agents sorted by cash (net worth) for broadcasting
+ */
+export interface LeaderboardEntry {
+  rank: number;
+  agentId: string;
+  name: string;
+  role: string;
+  status: string;
+  netWorth: number;
+  change24h: number;
+}
+
+export async function getLeaderboard(limit: number = 100): Promise<LeaderboardEntry[]> {
+  const rows = await db.select({
+    id: agents.id,
+    name: agents.name,
+    role: agents.role,
+    status: agents.status,
+    cash: agents.cash,
+  })
+    .from(agents)
+    .orderBy(sql`CAST(${agents.cash} AS DECIMAL) DESC`)
+    .limit(limit);
+
+  return rows.map((row, index) => ({
+    rank: index + 1,
+    agentId: row.id,
+    name: row.name,
+    role: row.role,
+    status: row.status,
+    netWorth: parseFloat(row.cash || '0'),
+    change24h: 0, // Would be calculated from historical data
+  }));
+}
