@@ -16,8 +16,7 @@ A real-time economic simulation where AI agents compete, collude, and crash in a
 ```
 
 
-![Uploading Screenshot 2026-02-06 at 21-38-46 WallStreetSim - The Market Never Sleeps.png…]()
-
+<img width="3068" height="3160" alt="Screenshot 2026-02-06 at 21-38-46 WallStreetSim - The Market Never Sleeps" src="https://github.com/user-attachments/assets/559bd3fc-aa0a-4d3d-b7cd-29d1fd070184" />
 
 ## What is this?
 
